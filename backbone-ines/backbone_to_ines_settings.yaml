@@ -1,0 +1,38 @@
+
+timestep_range: ["t000000","t400000"]
+sample_range: ["s000","s001"]
+forecast_range: ["f00","f03"]
+z_range: ["z000", "z100"]
+
+t_start: 1
+t_end: 148  #realization end?
+t_horizon: 1160
+t_jump: 24
+stepLengthInHours: 1
+dataLength: 8760
+
+sample_count: 1
+ms_initial: 's000'
+ms_central: 's000'
+ms_start: {'s000': 1}
+ms_end: {'s000': 100}
+
+#v ?
+p_msProbability: {'s000': 1}
+p_msWeight: {'s000': 1}
+p_msAnnuityWeight: {'s000': 1}
+#p_s_discountFactor: {'s000': 1} #already in db
+
+
+forecasts: 0
+mf_realization: 'f00'
+mf_central: 'f00'
+p_mfProbability: {'f00': 1}
+t_forecastStart: 1
+t_forecastLengthUnchanging: 3576
+boundForecastEnds: 0
+
+#all the data is output to this alternative
+alternative: "Backbone"
+
+
