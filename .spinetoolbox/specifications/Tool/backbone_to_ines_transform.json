@@ -1,0 +1,14 @@
+{
+    "name": "backbone_to_ines_transform",
+    "tooltype": "python",
+    "includes": [
+        "backbone_to_ines.py",
+        "backbone_to_ines_settings.yaml"
+    ],
+    "description": "",
+    "inputfiles": [],
+    "inputfiles_opt": [],
+    "outputfiles": [],
+    "cmdline_args": [],
+    "includes_main_path": "../../../backbone-ines"
+}

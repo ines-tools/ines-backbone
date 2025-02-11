@@ -1,0 +1,115 @@
+{
+    "project": {
+        "version": 13,
+        "description": "",
+        "settings": {
+            "enable_execute_all": true
+        },
+        "specifications": {
+            "Tool": [
+                {
+                    "type": "path",
+                    "relative": true,
+                    "path": ".spinetoolbox/specifications/Tool/backbone_to_ines_transform.json"
+                }
+            ]
+        },
+        "connections": [
+            {
+                "name": "from backbone_db to Backbone_to_ines_transform",
+                "from": [
+                    "backbone_db",
+                    "right"
+                ],
+                "to": [
+                    "Backbone_to_ines_transform",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {
+                        "db_url@backbone_db": {
+                            "scenario_filter": {},
+                            "alternative_filter": {
+                                "Base": true,
+                                "Import_from_GDX@2025-02-03T16:06:42": true
+                            }
+                        }
+                    },
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            },
+            {
+                "name": "from Backbone_to_ines_transform to ines_db",
+                "from": [
+                    "Backbone_to_ines_transform",
+                    "right"
+                ],
+                "to": [
+                    "ines_db",
+                    "left"
+                ],
+                "filter_settings": {
+                    "known_filters": {},
+                    "auto_online": true,
+                    "enabled_filter_types": {
+                        "alternative_filter": false,
+                        "scenario_filter": true
+                    }
+                }
+            }
+        ],
+        "jumps": []
+    },
+    "items": {
+        "backbone_db": {
+            "type": "Data Store",
+            "description": "",
+            "x": -204.39538111233088,
+            "y": 90.16925563980587,
+            "url": {
+                "dialect": "sqlite",
+                "host": "",
+                "port": "",
+                "database": "",
+                "schema": ""
+            }
+        },
+        "ines_db": {
+            "type": "Data Store",
+            "description": "",
+            "x": 69.1157604108485,
+            "y": 94.18611557733621,
+            "url": {
+                "dialect": "sqlite",
+                "host": "",
+                "port": "",
+                "database": "",
+                "schema": ""
+            }
+        },
+        "Backbone_to_ines_transform": {
+            "type": "Tool",
+            "description": "",
+            "x": -68.50642126088266,
+            "y": 86.64551535298989,
+            "specification": "backbone_to_ines_transform",
+            "execute_in_work": true,
+            "cmd_line_args": [
+                {
+                    "type": "resource",
+                    "arg": "db_url@backbone_db"
+                },
+                {
+                    "type": "resource",
+                    "arg": "db_url@ines_db"
+                }
+            ],
+            "kill_completed_processes": false,
+            "log_process_output": false
+        }
+    }
+}
