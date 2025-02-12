@@ -9,12 +9,9 @@ sample_range: ["s000","s001"]
 forecast_range: ["f00","f03"]
 z_range: ["z000", "z100"]
 
-t_start: 1
-t_end: 148
 t_horizon: 1160
 t_jump: 24
 stepLengthInHours: 1
-dataLength: 8760
 
 sample_count: 1
 ms_start: {'s000': 1}

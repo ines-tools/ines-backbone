@@ -8,23 +8,26 @@ Uses ines-spec 1.1.1
 
 ## use
 Get spine-toolbox "https://github.com/spine-tools/Spine-Toolbox", follow its install instructions. The transformation uses spine_db_api.
+
 Get ines-tools "https://github.com/ines-tools/ines-tools", and install it by "pip install ." in its folder.
+
 Get empty ines-spec database from "https://github.com/ines-tools/ines-spec"
 
 ### Prerequisite
 
 Transform the backbone gdx file to spine database using the workflow that comes with the backbone.
-Add time settings to backbone_to_ines_settings.yaml this mainly includes the information that is in scheduleInits.gms.
-This is not in the gdx file, and it is set in code in Backbone.
+Add time settings to backbone_to_ines_settings.yaml this includes the information that is in scheduleInits.gms.
 
 ### Option 1. Use directly from command line
 
 Make sure that the environment is on where the spine-toolbox installed.
 
 The command to transform is:
-"""
+
+```
 python backbone_to_ines.py path_to_input_db path_to_output_db
-"""
+```
+
 where, input_db is the backbone database and output_db is database of the ines-spec.
 
 ### Option 2. Use the toolbox project
@@ -41,9 +44,18 @@ It contains 3 elements:
 
 ## On timeseries
 
-All parameter data needs to be in the gdx file. If timeseries are not, as with northern european model, they can be added to it by running backbone with --debug. Timeseries directly from csv files should be added to the ines transformation.
+All parameter data needs to be in the gdx file. If timeseries are not, as with northern european model, they can be added to it by running backbone with --debug. Adding timeseries directly to the ines transformation is in the future development plan.
 
-## Information lost in the transfromation
+## Notes about the transformation
+
+- The timesteps are in timestamp form in INES. Backbone timesteps are transformed by setting the timestamp of the first timestep in backbone_to_ines_settings.yaml. 
+
+- If timeseries only has one forecast f00, the forecast dimension is removed.
+
+- Nodes have capacities in INES. The backbone format is changed to this using the maximum of UpwardLimit
+If investments are allowed with upperLimitCapacityRatio, the node investments are still bound to the unit in INES.
+
+## Information lost in the transformation
 
 ### General model parameters
 
@@ -65,7 +77,7 @@ All parameter data needs to be in the gdx file. If timeseries are not, as with n
 
 ### Unit
 
-- BecomeAvailable, BecomeUnavailable: could be replaced with availability timeseries
+- BecomeAvailable, BecomeUnavailable
 - BoundSamples
 - rampSpeedFromMinLoad
 - rampSpeedToMinLoad
@@ -94,3 +106,21 @@ All parameter data needs to be in the gdx file. If timeseries are not, as with n
 - availabilityCapacityMargin
 - energyShareMax
 - energyShareMin
+
+
+### z-dimension
+
+### Timeseries
+
+The following parameters are only transformed if they are constants, not timeseries:
+
+- startupCost
+- constraint constant
+- constraint coefficient
+
+The following parameters will not transform stochastic timeseries:
+
+- MaxSpill
+- MinSpill
+- penaltyUpward
+- penaltyDownward

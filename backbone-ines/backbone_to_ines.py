@@ -108,6 +108,8 @@ def main():
 
             if len(cannot_convert) > 0:
                 print(cannot_convert)
+            print("transformation complete")
+            
             return target_db
 
 # only the part below is specific to a tool
@@ -356,7 +358,6 @@ def create_timeline(source_db, target_db):
     #solve_pattern
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
     target_db = ines_transform.add_item_to_DB(target_db, "period", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(sample_names[0:settings["sample_count"]]))
-    #target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecasts_in_use", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(forecast_names))
     target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(start_times))
     target_db = ines_transform.add_item_to_DB(target_db, "duration", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(period_durations))
 
@@ -725,7 +726,6 @@ def process_links(source_db, target_db, t_val__timestamp):
     #add parameters to entity
     parameters_dict = {    
         'invCost': 'investment_cost',
-        'variableTransCost': 'operational_cost'
     }
 
     direct_parameters = {}
@@ -1224,7 +1224,7 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                             time_s = True
                             alt = timeseries["alternative_name"]
                             node_alt_ent_class_target = [alt, (gnb["entity_byname"][1],), "node"]
-                            target_db = pass_timeseries(target_db, 'storage_state_lower_limit', None, out, node_alt_ent_class_target, t_val__timestamp)
+                            target_db = pass_timeseries(target_db, 'storage_state_lower_limit', "storage_state_lower_limit_forecasts", out, node_alt_ent_class_target, t_val__timestamp)
         
         for uLCR in uLCRs:
             if node["entity_byname"][0] == uLCR["entity_byname"][1]:
@@ -1586,37 +1586,6 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
     
     return target_db
 
-    #all timeseries
-    """
-    392          ts_unit   ?
-    393          ts_unitConstraint no
-    394          ts_unitConstraintNode no
-    395          // gn time series
-    396          ts_influx              #
-    397          ts_cf                  #
-    398          ts_node                #
-    399          ts_gnn                 #
-    400          ts_price               #
-    401          ts_priceNew            #
-    402          ts_storageValue        #
-    403          // reserve time series
-    404          ts_reserveDemand       #
-    405          ts_reservePrice        no
-    406          // group time series
-    407          ts_emissionPrice       #
-    408          ts_emissionPriceNew    #
-    409          ts_groupPolicy
-    410   
-    411          // derived unit time series
-    412          ts_vomCost             #
-    413          ts_vomCostNew          #
-    414          ts_startupCost         no
-    415          ts_startupCostNew      no
-    416          // derived gn time series
-    417          ts_linkVomCost         #
-    """
-
-
 if __name__ == "__main__":
     developer_mode = False
     if developer_mode:
@@ -1628,10 +1597,6 @@ if __name__ == "__main__":
         url_db_in = sys.argv[1]
         url_db_out = sys.argv[2]
         settings_path = 'backbone_to_ines_settings.yaml'
-
-        #url_db_in = 'sqlite:///C:/Users/aetart/Documents/ines-backbone/BB_data_test_debug.sqlite'
-        #url_db_out = 'sqlite:///C:/Users/aetart/Documents/ines-backbone/ines-spec.sqlite'
-        #settings_path = 'C:/Users/aetart/Documents/ines-backbone/backbone-ines/backbone_to_ines_settings.yaml'
 
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
