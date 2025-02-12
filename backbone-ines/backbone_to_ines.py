@@ -2,7 +2,6 @@ import os
 import sys
 import yaml
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 import math
 from datetime import datetime, timedelta
@@ -109,7 +108,7 @@ def main():
             if len(cannot_convert) > 0:
                 print(cannot_convert)
             print("transformation complete")
-            
+
             return target_db
 
 # only the part below is specific to a tool
@@ -341,8 +340,8 @@ def create_timeline(source_db, target_db):
     for i in range(0,settings["sample_count"]):
         sample = sample_names[i]
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=(sample,)), warn=True)
-        period_duration = (settings["ms_end"][sample]-settings["ms_start"][sample])*settings["stepLengthInHours"]
-        start_times.append(str(timestamps[settings["ms_start"][sample]]))
+        period_duration = api.Duration(str((settings["ms_end"][sample]-settings["ms_start"][sample])*settings["stepLengthInHours"])+"h")
+        start_times.append(api.DateTime(timestamps[settings["ms_start"][sample]]))
         period_durations.append(period_duration)
         if settings["p_msProbability"][sample]:
             sample_weight = settings["p_msProbability"][sample]
@@ -353,7 +352,7 @@ def create_timeline(source_db, target_db):
         else:
             sample_weight = 1
         target_db = ines_transform.add_item_to_DB(target_db, "years_represented", [settings["alternative"], (sample,), "period"], sample_weight)
-        target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], (sample,), "period"], str(timestamps[settings["ms_start"][sample]]))
+        #target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], (sample,), "period"], str(timestamps[settings["ms_start"][sample]]))
 
     #solve_pattern
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
