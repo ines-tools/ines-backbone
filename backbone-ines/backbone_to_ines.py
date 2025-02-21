@@ -92,6 +92,8 @@ def main():
             target_db = create_simple_timeseries(source_db, target_db, t_val__timestamp)
             print("add node types")
             target_db = add_node_types(source_db, target_db)
+            print("add entity alternative items")
+            target_db = add_entity_alternative_items(target_db)
             # copy entities to parameters
             #target_db = ines_transform.copy_entities_to_parameters(source_db, target_db, entities_to_parameters)
 
@@ -324,10 +326,11 @@ def create_timeline(source_db, target_db):
     #timestamp map
     t_val__timestamp = dict()
     timestamps = list()
-    for i in enumerate(timestep_names):
-        timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i[0]*settings["stepLengthInHours"])
-        timestamps.append(timestamp)
-        t_val__timestamp[i[1]] = timestamp
+    for i, step in enumerate(timestep_names):
+        if i >= settings["t_start"] and i < settings["t_end"]:
+            timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i*settings["stepLengthInHours"])
+            timestamps.append(timestamp)
+            t_val__timestamp[step] = timestamp
     
     #system
     time_series = api.TimeSeriesVariableResolution(timestamps, [settings["stepLengthInHours"] for i in timestamps], ignore_year = False, repeat=False, index_name="time step")
@@ -341,7 +344,7 @@ def create_timeline(source_db, target_db):
         sample = sample_names[i]
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=(sample,)), warn=True)
         period_duration = api.Duration(str((settings["ms_end"][sample]-settings["ms_start"][sample])*settings["stepLengthInHours"])+"h")
-        start_times.append(api.DateTime(timestamps[settings["ms_start"][sample]]))
+        start_times.append(api.DateTime(timestamps[settings["ms_start"][sample]-1]))
         period_durations.append(period_duration)
         if settings["p_msProbability"][sample]:
             sample_weight = settings["p_msProbability"][sample]
@@ -367,11 +370,19 @@ def create_timeline(source_db, target_db):
 
     #stochastic information
     target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecasts_in_use", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(list(settings["p_mfProbability"].keys())))
-    #weights
-
+    ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('stochastics',)), warn=True)
+    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecast_weights", [settings["alternative"], ('stochastics',), "set"],
+                                              api.Map(list(settings["p_mfProbability"].keys()),list(settings["p_mfProbability"].values())))
+    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_scope", [settings["alternative"], ('solve',), "solve_pattern"], "set_based_override")
     #realization
 
-
+    #forecast interpolation
+    if settings["t_improveForecastNew"]:
+        inter_array = api.Array([i/float(settings["t_improveForecastNew"]) for i in range(0,settings["t_improveForecastNew"])])
+        target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecast_interpolation_factors", [settings["alternative"], ('stochastics',), "set"], inter_array)
+        target_db = ines_transform.add_item_to_DB(target_db, "stochastic_method", [settings["alternative"], ('stochastics',), "set"], "interpolate_time_series_forecasts")
+        
+    
     return target_db, t_val__timestamp
 
 def range_to_array(name_range):
@@ -644,6 +655,7 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
     unit_availabilities = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'availability')
     startColdAfterXhourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startColdAfterXhours')
     startWarmAfterXHourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startWarmAfterXHours')
+    
     for param in efficiency:
         value = api.from_database(param["value"], param["type"])
         effs = []
@@ -718,6 +730,23 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
             alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
             target_db = ines_transform.add_item_to_DB(target_db, 'investment_uses_integer', alt_ent_class_target, True)
 
+
+    #start-up method
+    # Here we are using only the effLevel level1 and ignoring the levels used with longer step sizes
+    # when rampToMinLoad and rampFromMinLoad are added, these units would use the "trajectory" method
+
+    effLevel__effSelector__unit =  source_db.get_entity_items(entity_class_name='effLevel__effSelector__unit')
+
+    for entity in effLevel__effSelector__unit:
+        if entity["entity_byname"][0] == "level1":
+            if entity["entity_byname"][1] == "directOff":
+                method = "no_startup"
+            elif entity["entity_byname"][1] == "directOnLP":
+                method = "linear"
+            elif entity["entity_byname"][1] == "directOnMIP":
+                method = "integer"
+            target_db = ines_transform.add_item_to_DB(target_db, 'startup_method', [settings["alternative"], (entity["entity_byname"][2],) ,"unit"], method)
+
     return target_db
 
 def process_links(source_db, target_db, t_val__timestamp):
@@ -738,7 +767,7 @@ def process_links(source_db, target_db, t_val__timestamp):
     transferCaps = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='transferCap')
     unit_sizes = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='unitSize')
     transferCapInvLimits = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='transferCapInvLimit')
-    transfer_loss = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='transfer_loss')
+    transfer_loss = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='transferLoss')
     ICrampDown = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='ICrampDown')
     ICrampUp = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='ICrampUp')
     investMIP = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='investMIP')
@@ -746,8 +775,9 @@ def process_links(source_db, target_db, t_val__timestamp):
 
     for link in source_db.get_entity_items(entity_class_name='grid__node__node'):
         target_entity_byname = ('link_'+link["entity_byname"][1]+"_"+link["entity_byname"][2],)
-        
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='link', entity_byname=target_entity_byname), warn=True)
+        rel_target_entity_byname = (link["entity_byname"][1], target_entity_byname[0], link["entity_byname"][2])
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node__link__node', entity_byname=rel_target_entity_byname), warn=True)
         for name, target_name in parameters_dict.items():
             for param in direct_parameters[name]:
                 if link["name"] == param["entity_name"]:
@@ -1485,6 +1515,22 @@ def create_simple_timeseries(source_db, target_db, t_val__timestamp):
 
     return target_db
 
+def add_entity_alternative_items(target_db):
+    for entity_class in target_db.get_entity_class_items():
+        for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]):
+            item = target_db.get_entity_alternative_item(
+                entity_class_name=entity_class["name"],
+                entity_byname=entity["entity_byname"],
+                alternative_name=settings["alternative"],
+            )
+            if not item:
+                ines_transform.assert_success(target_db.add_update_entity_alternative_item(
+                    entity_class_name=entity_class["name"],
+                    entity_byname=entity["entity_byname"],
+                    alternative_name=settings["alternative"],
+                    active=True,
+                ))
+    return target_db
 
 ###############
 #HELPPER FUNCTIONS
@@ -1507,49 +1553,69 @@ def calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_en
         target_db = ines_transform.add_item_to_DB(target_db, "investment_cost", alt_ent_class_target, investment_cost)
     return target_db
 
-def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_class_target, t_val__timestamp):
-
+def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_class_target, t_val__timestamp, stochastic_group = None):
     if isinstance(value,float):
-        ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, value)
+        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, value)
     else:
         if len(value.values) > 1:
             if target_name_stoch:
+                print(f'processing stochastic timeseries:{target_name_stoch}')
+                inner_series = []
                 for i in value.values:
-                    timestamps = []
-                    for j in i.indexes:
-                        timestamps.append(str(t_val__timestamp[j]))
-                    i.indexes = timestamps
-                ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, value)
+                    t_vals = list(i.indexes)
+                    timestamps = [stamp for stamp in t_val__timestamp.values()]
+                    out_vals = [i.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+                    inner_series.append(api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step"))
+                value.values = inner_series
+                target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, value)
+                if not stochastic_group:
+                    out_byname = ("stochastics",) + alt_ent_class_target[1]
+                else:
+                    out_byname = (stochastic_group,)  + alt_ent_class_target[1]
+                if alt_ent_class_target[2] == "unit__to_node" or alt_ent_class_target[2] == "node__to_unit":
+                    out_class = "set__unit_flow"
+                else:
+                    out_class = f'set__{alt_ent_class_target[2]}'
+                target_db.add_entity_item(entity_class_name=out_class, entity_byname=out_byname)
         else: #strip the f00 if it is the only one
-            timestamps = []
-            for i in value.values[0].indexes:
-                timestamps.append(str(t_val__timestamp[i]))
-            time_series = api.TimeSeriesVariableResolution(timestamps, value.values[0].values, ignore_year = False, repeat=False, index_name="time step")
+            t_vals = list(value.indexes)
+            timestamps = [str(stamp) for stamp in t_val__timestamp.values()]
+            out_vals = [value.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+            time_series = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
             target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, time_series)
 
     return target_db
 
-def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class_target, target_param, stoch_target_param):
+def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class_target, target_param, target_name_stoch, stochastic_group = None):
     #stoch
     if isinstance(source_value.values[0], api.parameter_value.Map):
         if len(source_value.indexes) > 1:
-            inner_price_timeseries = []
-            forecasts = []
-            for forecast, values_map in source_value.items():
-                values = list()
-                price = 0
-                priceChange_dict = values_map.to_dict()
-                for i in t_val__timestamp.keys():
-                    for step__price in priceChange_dict["data"]:
-                        if i == step__price[0]:
-                            price = step__price[1]
-                            break
-                    values.append(price)
-                inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
-                forecasts.append(forecast)
-            price_timeseries = api.Map(forecasts, inner_price_timeseries)
-            if stoch_target_param:
-                target_db = ines_transform.add_item_to_DB(target_db, stoch_target_param, alt_ent_class_target, price_timeseries, value_type="map")
+            if target_name_stoch:
+                inner_price_timeseries = []
+                forecasts = []
+                for forecast, values_map in source_value.items():
+                    values = list()
+                    price = 0
+                    priceChange_dict = values_map.to_dict()
+                    for i in t_val__timestamp.keys():
+                        for step__price in priceChange_dict["data"]:
+                            if i == step__price[0]:
+                                price = step__price[1]
+                                break
+                        values.append(price)
+                    inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
+                    forecasts.append(forecast)
+                price_timeseries = api.Map(forecasts, inner_price_timeseries)
+                target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, price_timeseries, value_type="map")
+                if not stochastic_group:
+                    out_byname = ("stochastics",) + alt_ent_class_target[1]
+                else:
+                    out_byname = (stochastic_group,) + alt_ent_class_target[1]
+                if alt_ent_class_target[2] == "unit__to_node" or alt_ent_class_target[2] == "node__to_unit":
+                    out_class = "set__unit_flow"
+                else:
+                    out_class = f'set__{alt_ent_class_target[2]}'
+                target_db.add_entity_item(entity_class_name=out_class, entity_byname=out_byname)
         else: #remove f00 
             for forecast, values_map in source_value.items():
                 values = list()
@@ -1568,7 +1634,7 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
             target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, time_series)
     #single value
     elif len(source_value.values) == 1:
-        price_timeseries = source_value.values[0]
+        price_timeseries = float(source_value.values[0])
         target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, price_timeseries)
     #timeseries
     else:   #create a timeseries
