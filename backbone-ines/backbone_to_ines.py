@@ -1,9 +1,10 @@
 import os
 import sys
 import yaml
-import numpy as np
+import csv
 from pathlib import Path
-import math
+import numpy as np
+import pandas as pd
 from datetime import datetime, timedelta
 #from ines_tools import ines_transform
 from ines_tools import ines_transform
@@ -47,6 +48,8 @@ def main():
             # copy entities from yaml files
             print("copy entities")
             target_db = ines_transform.copy_entities(source_db, target_db, entities_to_copy)
+
+            target_db = inflow_timeseries_from_csv(target_db, "./influx_timeseries", t_val__timestamp)
             #create in-and-out relationships
             print("add link capacities")
             target_db = process_links(source_db, target_db, t_val__timestamp)
@@ -326,12 +329,25 @@ def create_timeline(source_db, target_db):
     #timestamp map
     t_val__timestamp = dict()
     timestamps = list()
-    for i, step in enumerate(timestep_names):
-        if i >= settings["t_start"] and i < settings["t_end"]:
-            timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i*settings["stepLengthInHours"])
-            timestamps.append(timestamp)
-            t_val__timestamp[step] = timestamp
-    
+    if settings["t_start"] and settings["t_end"]:
+        for i, step in enumerate(timestep_names):
+            if i >= settings["t_start"] and i < settings["t_end"]:
+                timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i*settings["stepLengthInHours"])
+                timestamps.append(timestamp)
+                t_val__timestamp[step] = timestamp
+    elif settings["tsYear"] and settings["modelledDays"]:
+        start_timestep = datetime(settings["tsYear"],1,1)
+        start_time = (start_timestep - datetime.fromisoformat(settings["first_timestamp"])).total_seconds()/3600.0
+        end_timestep = start_timestep + timedelta(hours=settings["modelledDays"]*settings["stepLengthInHours"])
+        end_time = (end_timestep - datetime.fromisoformat(settings["first_timestamp"])).total_seconds()/3600.0
+        for i, step in enumerate(timestep_names):
+            if i>= start_time and i < end_time:
+                timestamp = start_timestep +  timedelta(hours=(i-start_time)*settings["stepLengthInHours"])
+                timestamps.append(timestamp)
+                t_val__timestamp[step] = timestamp
+    else:
+        print("Define t_start and t_end in the settings file. Alternatively, if using Northern European Model, set tsYear and modelledDays")
+        exit(-1)
     #system
     time_series = api.TimeSeriesVariableResolution(timestamps, [settings["stepLengthInHours"] for i in timestamps], ignore_year = False, repeat=False, index_name="time step")
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='system',entity_byname=('Time',)), warn=True)
@@ -355,7 +371,6 @@ def create_timeline(source_db, target_db):
         else:
             sample_weight = 1
         target_db = ines_transform.add_item_to_DB(target_db, "years_represented", [settings["alternative"], (sample,), "period"], sample_weight)
-        #target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], (sample,), "period"], str(timestamps[settings["ms_start"][sample]]))
 
     #solve_pattern
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
@@ -474,7 +489,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
         for entity in grid__node__unit_groups:
             group_entity_byname = (entity["entity_byname"][3],target_entity_byname)
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow', 
-                                                entity_byname=group_entity_byname, warn=True))
+                                                entity_byname=group_entity_byname), warn=True)
 
     #calculate start-up costs and emissions
     for unit in units:
@@ -867,7 +882,7 @@ def process_links(source_db, target_db, t_val__timestamp):
     for entity in grid__node__node__groups:
         target_entity_byname = (entity["entity_byname"][3],'link_'+entity["entity_byname"][1]+"_"+entity["entity_byname"][2])
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link', 
-                                            entity_byname=target_entity_byname, warn=True))
+                                            entity_byname=target_entity_byname), warn=True)
 
     return target_db
 
@@ -875,7 +890,7 @@ def diff_coeff(source_db, target_db, t_val__timestamp):
 
     for param in source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name = 'diffCoeff'):
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node__node', 
-                                                                entity_byname=(param["entity_byname"][1], param["entity_byname"][2]), warn=True))
+                                                                entity_byname=(param["entity_byname"][1], param["entity_byname"][2])), warn=True)
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][1], param["entity_byname"][2]), "node_node"]
         value = api.from_database(param["value"], param["type"])
         target_db = ines_transform.add_item_to_DB(target_db, 'diffusion_coefficient', alt_ent_class_target, value)
@@ -886,9 +901,9 @@ def capacity_margin(source_db, target_db, t_val__timestamp):
 
     for param in source_db.get_parameter_value_items(entity_class_name='grid__node', parameter_definition_name = 'capacityMargin'):
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set', 
-                                                                entity_byname=(param["entity_byname"][2],), warn=True))
+                                                                entity_byname=(param["entity_byname"][2],)), warn=True)
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node', 
-                                                                entity_byname=(param["entity_byname"][2],param["entity_byname"][2]), warn=True))
+                                                                entity_byname=(param["entity_byname"][2],param["entity_byname"][2])), warn=True)
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][2],), "set"]
         value = api.from_database(param["value"], param["type"])
         target_db = ines_transform.add_item_to_DB(target_db, 'capacity_margin', alt_ent_class_target, value)
@@ -1532,6 +1547,32 @@ def add_entity_alternative_items(target_db):
                 ))
     return target_db
 
+def inflow_timeseries_from_csv(target_db, input_folder, t_val__timestamp):
+
+    input_folder = Path(f"./{input_folder}")
+    for filename in os.listdir(input_folder):
+        if filename.endswith(".csv"):
+            df = pd.read_csv(os.path.join(input_folder,filename),header = 0)
+            columns = df.columns[3:]
+            dff =  df['f']
+            forecasts = dff.drop_duplicates().values.tolist()
+            for node in columns.values:
+                inner_series = []
+                indexes = []
+                for forecast in forecasts:
+                    entity_byname = (node,)
+                    df2 = pd.DataFrame(data=df)
+                    df2.filter(items=[forecast], axis=0)
+                    t_vals = df2['t'].values.tolist()
+                    values = df2[node].values.tolist()
+                    timestamps = [stamp for stamp in t_val__timestamp.values()]
+                    out_vals = [values[t_vals.index(t_val)] for t_val in t_val__timestamp.keys() if t_val in t_vals]
+                    indexes.append(forecast)
+                    inner_series.append(api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step"))
+                value = api.Map(indexes,inner_series)
+                target_db = ines_transform.add_item_to_DB(target_db, 'flow_profile_forecasts', [settings["alternative"], entity_byname, "node"], value)
+    return target_db
+
 ###############
 #HELPPER FUNCTIONS
 ###############
@@ -1659,9 +1700,13 @@ if __name__ == "__main__":
         conversion_configuration(conversions = [save_folder+'/backbone_to_ines_entities.yaml', save_folder+'/backbone_to_ines_parameters.yaml', save_folder+'/backbone_to_ines_parameter_methods.yaml',
                                              save_folder+'/backbone_to_ines_parameters_to_relationships.yaml'], overwrite=True)
     else:
-        url_db_in = sys.argv[1]
-        url_db_out = sys.argv[2]
-        settings_path = 'backbone_to_ines_settings.yaml'
+        
+        url_db_in = "sqlite:///C:/Users/aetart/Documents/ines-backbone/BB_data_test.sqlite"
+        url_db_out = "sqlite:///C:/Users/aetart/Documents/ines-backbone/ines-spec.sqlite"
+        
+        #url_db_in = sys.argv[1]
+        #url_db_out = sys.argv[2]
+        settings_path = './backbone-ines/backbone_to_ines_settings.yaml'
 
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
