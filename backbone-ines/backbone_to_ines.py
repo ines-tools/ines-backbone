@@ -49,7 +49,7 @@ def main():
             print("copy entities")
             target_db = ines_transform.copy_entities(source_db, target_db, entities_to_copy)
 
-            target_db = inflow_timeseries_from_csv(target_db, "./influx_timeseries", t_val__timestamp)
+            #target_db = inflow_timeseries_from_csv(target_db, "./influx_timeseries", t_val__timestamp)
             #create in-and-out relationships
             print("add link capacities")
             target_db = process_links(source_db, target_db, t_val__timestamp)
@@ -384,12 +384,10 @@ def create_timeline(source_db, target_db):
         target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], settings["t_horizon"])
 
     #stochastic information
-    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecasts_in_use", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(list(settings["p_mfProbability"].keys())))
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('stochastics',)), warn=True)
     target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecast_weights", [settings["alternative"], ('stochastics',), "set"],
                                               api.Map(list(settings["p_mfProbability"].keys()),list(settings["p_mfProbability"].values())))
-    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_scope", [settings["alternative"], ('solve',), "solve_pattern"], "set_based_override")
-    #realization
+    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_scope", [settings["alternative"], ('solve',), "solve_pattern"], "whole_model")
 
     #forecast interpolation
     if settings["t_improveForecastNew"]:
@@ -1602,12 +1600,19 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
             if target_name_stoch:
                 print(f'processing stochastic timeseries:{target_name_stoch}')
                 inner_series = []
-                for i in value.values:
-                    t_vals = list(i.indexes)
+                forecasts = []
+                for i, val_map in enumerate(value.values):
+                    t_vals = list(val_map.indexes)
                     timestamps = [stamp for stamp in t_val__timestamp.values()]
-                    out_vals = [i.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
-                    inner_series.append(api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step"))
+                    out_vals = [val_map.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+                    timeseries = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
+                    if value.indexes[i] == 'f00':
+                        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, timeseries, value_type="map")
+                    else:
+                        inner_series.append(timeseries)
+                        forecasts.append(value.indexes[i])
                 value.values = inner_series
+                value.indexes = forecasts
                 target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, value)
                 if not stochastic_group:
                     out_byname = ("stochastics",) + alt_ent_class_target[1]
@@ -1644,8 +1649,13 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
                                 price = step__price[1]
                                 break
                         values.append(price)
-                    inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
-                    forecasts.append(forecast)
+                    if forecast == 'f00':
+                        for i in values.indexes:
+                            timestamps.append(str(t_val__timestamp[i]))
+                        target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, price_timeseries, value_type="map")
+                    else:
+                        inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
+                        forecasts.append(forecast)
                 price_timeseries = api.Map(forecasts, inner_price_timeseries)
                 target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, price_timeseries, value_type="map")
                 if not stochastic_group:
@@ -1699,14 +1709,10 @@ if __name__ == "__main__":
         save_folder = os.path.dirname(__file__)
         conversion_configuration(conversions = [save_folder+'/backbone_to_ines_entities.yaml', save_folder+'/backbone_to_ines_parameters.yaml', save_folder+'/backbone_to_ines_parameter_methods.yaml',
                                              save_folder+'/backbone_to_ines_parameters_to_relationships.yaml'], overwrite=True)
-    else:
-        
-        url_db_in = "sqlite:///C:/Users/aetart/Documents/ines-backbone/BB_data_test.sqlite"
-        url_db_out = "sqlite:///C:/Users/aetart/Documents/ines-backbone/ines-spec.sqlite"
-        
-        #url_db_in = sys.argv[1]
-        #url_db_out = sys.argv[2]
-        settings_path = './backbone-ines/backbone_to_ines_settings.yaml'
+    else:   
+        url_db_in = sys.argv[1]
+        url_db_out = sys.argv[2]
+        settings_path = './backbone_to_ines_settings.yaml'
 
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
