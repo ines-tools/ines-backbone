@@ -224,7 +224,7 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                     },
                     'grid__node':{
                         'node':{
-                            'selfDischargeLoss': 'storage_loss_from_stored_energy',
+                            'selfDischargeLoss': ['storage_loss_from_stored_energy', 1.0, [[2]]]
                         }
                     },
                     'group__emission':{
@@ -257,7 +257,7 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                         }
                     ,'grid__node__unit__io':{
                         'unit':{
-                            'shutdownCost': ['shutdown_cost',1.0,[[2]]]
+                            'shutdownCost': ['shutdown_cost',1.0,[[3]]]
                         }
                     }    
                 }
