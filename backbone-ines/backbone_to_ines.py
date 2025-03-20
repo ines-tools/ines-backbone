@@ -379,9 +379,11 @@ def create_timeline(source_db, target_db):
     target_db = ines_transform.add_item_to_DB(target_db, "duration", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(period_durations))
 
     if settings["t_horizon"] and settings["t_jump"]:
-        target_db = ines_transform.add_item_to_DB(target_db, "solve_mode", [settings["alternative"], ('solve',), "solve_pattern"], "rolling_window" )
-        target_db = ines_transform.add_item_to_DB(target_db, "rolling_jump", [settings["alternative"], ('solve',), "solve_pattern"], settings["t_jump"])
-        target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], settings["t_horizon"])
+        target_db = ines_transform.add_item_to_DB(target_db, "solve_mode", [settings["alternative"], ('solve',), "solve_pattern"], "rolling_window")
+        jump = api.Duration(str(settings["t_jump"] * settings["stepLengthInHours"])+"h")
+        horizon = api.Duration(str(settings["t_horizon"] * settings["stepLengthInHours"])+"h")
+        target_db = ines_transform.add_item_to_DB(target_db, "rolling_jump", [settings["alternative"], ('solve',), "solve_pattern"], jump)
+        target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], horizon)
 
     #stochastic information
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('stochastics',)), warn=True)
