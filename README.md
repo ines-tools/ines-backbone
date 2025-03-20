@@ -6,12 +6,14 @@ Translation between the ines specification and the Backbone structure
 Functional, but not completely tested.
 Uses ines-spec 1.1.1
 
-## use
+## Use
 Get spine-toolbox "https://github.com/spine-tools/Spine-Toolbox", follow its install instructions. The transformation uses spine_db_api.
 
 Get ines-tools "https://github.com/ines-tools/ines-tools", and install it by "pip install ." in its folder.
 
 Get empty ines-spec database from "https://github.com/ines-tools/ines-spec"
+
+Change the time and stochastic forecast settings to match your model in backbone_to_ines_settings.yaml.
 
 ### Prerequisite
 
@@ -41,6 +43,15 @@ It contains 3 elements:
     + additional file = backbone_to_ines_settings.yaml
 + 3. database for pypsa data in ines format
     + main file: set the path to the ines_db
+
+## Update
+
+Git pull 
+1. This repository
+2. Ines-tools "https://github.com/ines-tools/ines-tools", and install it by "pip install ." in its folder.
+3. Get an updated ines-spec database from "https://github.com/ines-tools/ines-spec"
+
+The backbone_to_ines_settings.yaml file is not updated, but the template backbone_to_ines_settings_template.yaml is. Copy it and rename it to backbone_to_ines_settings.yaml.
 
 ## On timeseries
 

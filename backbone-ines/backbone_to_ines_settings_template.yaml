@@ -1,4 +1,9 @@
-#set annuities are split into parts (investment cost, lifetime and interest rate)
+#Here the settings for the backbone to ines transformation are defined. The time settings are here as not all of them are included in the gdx file.
+#If a setting is not used, leave it empty like:
+# t_jump:
+# t_horizon:
+
+#The set annuities are split into parts (investment cost, lifetime and interest rate)
 default_lifetime: 50
 default_interest_rate: 0.05
 
