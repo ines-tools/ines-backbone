@@ -4,7 +4,7 @@ Translation between the ines specification and the Backbone structure
 ## Status
 
 Functional, but not completely tested.
-Uses ines-spec 1.1.1
+Uses ines-spec 1.1.2
 
 ## Use
 Get spine-toolbox "https://github.com/spine-tools/Spine-Toolbox", follow its install instructions. The transformation uses spine_db_api.
@@ -60,6 +60,8 @@ All parameter data needs to be in the gdx file. If timeseries are not, as with n
 ## Notes about the transformation
 
 - The timesteps are in timestamp form in INES. Backbone timesteps are transformed by setting the timestamp of the first timestep in backbone_to_ines_settings.yaml. 
+
+- The settings file contains the time structure information as these are not in the gdx file.
 
 - If timeseries only has one forecast f00, the forecast dimension is removed.
 
