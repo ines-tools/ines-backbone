@@ -55,6 +55,8 @@ def main():
             target_db = process_links(source_db, target_db, t_val__timestamp)
             print("create unit relationships")
             target_db = create_unit_relationship(source_db, target_db, t_val__timestamp)
+            print("create grid groups")
+            target_db = create_sets_from_grids(source_db, target_db)
             #copy parameters to relationships
             print("create relationships from parameters")
             target_db = ines_transform.transform_parameters_to_relationship_entities(source_db, target_db, parameters_to_relationships)
@@ -434,7 +436,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
     #'unitSizeMVA': not in ines (M volt amp)
     }
 
-    grid__node__unit_groups = source_db.get_entity_items(entity_class_name='grid__node__unit_group')
+    grid__node__unit__groups = source_db.get_entity_items(entity_class_name='grid__node__unit_group')
     annuity = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='annuity')
     parameter_values = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io')
     units = source_db.get_entity_items(entity_class_name='unit')
@@ -486,7 +488,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                 target_db = ines_transform.add_item_to_DB(target_db, 'lifetime', [param["alternative_name"], (param["entity_byname"][2],), target_class], lifetime)
                 target_db = ines_transform.add_item_to_DB(target_db, 'interest_rate', [param["alternative_name"], (param["entity_byname"][2],), target_class], r)
     
-        for entity in grid__node__unit_groups:
+        for entity in grid__node__unit__groups:
             group_entity_byname = (entity["entity_byname"][3],target_entity_byname)
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow', 
                                                 entity_byname=group_entity_byname), warn=True)
@@ -1568,6 +1570,35 @@ def create_simple_timeseries(source_db, target_db, t_val__timestamp):
     for param in storage_value:
         value =  api.from_database(param["value"], param["type"])
         target_db = pass_timeseries(target_db, 'storage_state_value', 'storage_state_value_forecasts', value, [param["alternative_name"], (param["entity_byname"][0],), "node"], t_val__timestamp)
+
+    return target_db
+
+def create_sets_from_grids(source_db, target_db):
+    grids = source_db.get_entity_items(entity_class_name='grid')
+    grid__nodes = source_db.get_entity_items(entity_class_name='grid__node')
+    grid__node__nodes = source_db.get_entity_items(entity_class_name='grid__node__node')
+    grid__node__unit__ios = source_db.get_entity_items(entity_class_name='grid__node__unit__io')
+
+    for grid in grids:
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("grid_"+grid["name"],)), warn=True)
+        for grid__node in grid__nodes:
+            if grid__node["entity_byname"][0] == grid["entity_byname"][0]:
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',
+                                                                        entity_byname=("grid_"+grid__node["entity_byname"][0], grid__node["entity_byname"][1])), warn=True)
+        for grid__node__node in grid__node__nodes:
+            if grid__node__node["entity_byname"][0] == grid["entity_byname"][0]:
+                link_name = f'link_{grid__node__node["entity_byname"][1]}_{grid__node__node["entity_byname"][2]}'
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link',
+                                                                        entity_byname=("grid_"+ grid__node__node["entity_byname"][0], link_name)), warn=True)
+
+        for gnuio in grid__node__unit__ios:
+            if gnuio["entity_byname"][0] == grid["entity_byname"][0]:
+                if gnuio["entity_byname"][3] == 'input':
+                    ent = ("grid_"+ gnuio["entity_byname"][0], gnuio["entity_byname"][1],gnuio["entity_byname"][2])
+                elif gnuio["entity_byname"][3] == 'output':
+                    ent = ("grid_"+ gnuio["entity_byname"][0],gnuio["entity_byname"][2],gnuio["entity_byname"][1])
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow',
+                                                                        entity_byname=ent), warn=True)
 
     return target_db
 
