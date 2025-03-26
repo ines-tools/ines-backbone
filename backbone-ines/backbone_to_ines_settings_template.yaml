@@ -1,30 +1,48 @@
+#Here the settings for the backbone to ines transformation are defined. The time settings are here as not all of them are included in the gdx file.
+#If a setting is not used, leave it empty like:
+# t_jump:
+# t_horizon:
+
+#The set annuities are split into parts (investment cost, lifetime and interest rate)
 default_lifetime: 50
 default_interest_rate: 0.05
 
-#t values are converted to timestamps, this corresponds to the first t value, the rest are calculated using stepLengthInHours
+#t values are converted to timestamps, so this corresponds to the first t value, the rest are calculated using stepLengthInHours
+#for Northern european model this should be: '1982-01-01T00:00:00'
 first_timestamp: '2013-01-01T00:00:00'
 
 timestep_range: ["t000000","t400000"]
 sample_range: ["s000","s001"]
 forecast_range: ["f00","f03"]
-z_range: ["z000", "z100"]
 
-t_horizon: 1160
-t_jump: 24
+#t_start, t_end and stepLengthInHours are mandatory
+t_start: 1
+t_end: 4000
+t_horizon: 2000
+t_jump: 1000
 stepLengthInHours: 1
 
+###Optional, for northern european model use. Will not take effect unless t_start or t_end are empty
+tsYear: 2014
+modelledDays: 7
+
+#sample params
+#at least one sample should be defined
 sample_count: 1
 ms_start: {'s000': 1}
 ms_end: {'s000': 100}
 
+#by default uses msProbability to produce the sample weight, but if None, the two others are tried
 p_msProbability: {'s000': 1}
 p_msWeight: {'s000': 1}
 p_msAnnuityWeight: {'s000': 1}
 
+#forecast params
 mf_realization: 'f00' 
 p_mfProbability: {'f00': 1, 'f01': 0.6, 'f02': 0.2, 'f03': 0.2}
+t_improveForecastNew: 168
 
-#the datawithout a prior alternative will use this instead
+#the data without a prior alternative will use this instead
 alternative: "Backbone"
 
 

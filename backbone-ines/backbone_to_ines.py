@@ -1,9 +1,10 @@
 import os
 import sys
 import yaml
-import numpy as np
+import csv
 from pathlib import Path
-import math
+import numpy as np
+import pandas as pd
 from datetime import datetime, timedelta
 #from ines_tools import ines_transform
 from ines_tools import ines_transform
@@ -47,11 +48,15 @@ def main():
             # copy entities from yaml files
             print("copy entities")
             target_db = ines_transform.copy_entities(source_db, target_db, entities_to_copy)
+
+            #target_db = inflow_timeseries_from_csv(target_db, "./influx_timeseries", t_val__timestamp)
             #create in-and-out relationships
             print("add link capacities")
             target_db = process_links(source_db, target_db, t_val__timestamp)
             print("create unit relationships")
             target_db = create_unit_relationship(source_db, target_db, t_val__timestamp)
+            print("create grid groups")
+            target_db = create_sets_from_grids(source_db, target_db)
             #copy parameters to relationships
             print("create relationships from parameters")
             target_db = ines_transform.transform_parameters_to_relationship_entities(source_db, target_db, parameters_to_relationships)
@@ -221,7 +226,7 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                     },
                     'grid__node':{
                         'node':{
-                            'selfDischargeLoss': 'storage_loss_from_stored_energy',
+                            'selfDischargeLoss': ['storage_loss_from_stored_energy', 1.0, [[2]]]
                         }
                     },
                     'group__emission':{
@@ -254,7 +259,7 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                         }
                     ,'grid__node__unit__io':{
                         'unit':{
-                            'shutdownCost': ['shutdown_cost',1.0,[[2]]]
+                            'shutdownCost': ['shutdown_cost',1.0,[[3]]]
                         }
                     }    
                 }
@@ -326,12 +331,25 @@ def create_timeline(source_db, target_db):
     #timestamp map
     t_val__timestamp = dict()
     timestamps = list()
-    for i, step in enumerate(timestep_names):
-        if i >= settings["t_start"] and i < settings["t_end"]:
-            timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i*settings["stepLengthInHours"])
-            timestamps.append(timestamp)
-            t_val__timestamp[step] = timestamp
-    
+    if settings["t_start"] and settings["t_end"]:
+        for i, step in enumerate(timestep_names):
+            if i >= settings["t_start"] and i < settings["t_end"]:
+                timestamp = datetime.fromisoformat(settings["first_timestamp"]) +  timedelta(hours=i*settings["stepLengthInHours"])
+                timestamps.append(timestamp)
+                t_val__timestamp[step] = timestamp
+    elif settings["tsYear"] and settings["modelledDays"]:
+        start_timestep = datetime(settings["tsYear"],1,1)
+        start_time = (start_timestep - datetime.fromisoformat(settings["first_timestamp"])).total_seconds()/3600.0
+        end_timestep = start_timestep + timedelta(hours=settings["modelledDays"]*settings["stepLengthInHours"])
+        end_time = (end_timestep - datetime.fromisoformat(settings["first_timestamp"])).total_seconds()/3600.0
+        for i, step in enumerate(timestep_names):
+            if i>= start_time and i < end_time:
+                timestamp = start_timestep +  timedelta(hours=(i-start_time)*settings["stepLengthInHours"])
+                timestamps.append(timestamp)
+                t_val__timestamp[step] = timestamp
+    else:
+        print("Define t_start and t_end in the settings file. Alternatively, if using Northern European Model, set tsYear and modelledDays")
+        exit(-1)
     #system
     time_series = api.TimeSeriesVariableResolution(timestamps, [settings["stepLengthInHours"] for i in timestamps], ignore_year = False, repeat=False, index_name="time step")
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='system',entity_byname=('Time',)), warn=True)
@@ -355,7 +373,6 @@ def create_timeline(source_db, target_db):
         else:
             sample_weight = 1
         target_db = ines_transform.add_item_to_DB(target_db, "years_represented", [settings["alternative"], (sample,), "period"], sample_weight)
-        #target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], (sample,), "period"], str(timestamps[settings["ms_start"][sample]]))
 
     #solve_pattern
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
@@ -364,17 +381,17 @@ def create_timeline(source_db, target_db):
     target_db = ines_transform.add_item_to_DB(target_db, "duration", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(period_durations))
 
     if settings["t_horizon"] and settings["t_jump"]:
-        target_db = ines_transform.add_item_to_DB(target_db, "solve_mode", [settings["alternative"], ('solve',), "solve_pattern"], "rolling_window" )
-        target_db = ines_transform.add_item_to_DB(target_db, "rolling_jump", [settings["alternative"], ('solve',), "solve_pattern"], settings["t_jump"])
-        target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], settings["t_horizon"])
+        target_db = ines_transform.add_item_to_DB(target_db, "solve_mode", [settings["alternative"], ('solve',), "solve_pattern"], "rolling_window")
+        jump = api.Duration(str(settings["t_jump"] * settings["stepLengthInHours"])+"h")
+        horizon = api.Duration(str(settings["t_horizon"] * settings["stepLengthInHours"])+"h")
+        target_db = ines_transform.add_item_to_DB(target_db, "rolling_jump", [settings["alternative"], ('solve',), "solve_pattern"], jump)
+        target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], horizon)
 
     #stochastic information
-    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecasts_in_use", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(list(settings["p_mfProbability"].keys())))
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('stochastics',)), warn=True)
     target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecast_weights", [settings["alternative"], ('stochastics',), "set"],
                                               api.Map(list(settings["p_mfProbability"].keys()),list(settings["p_mfProbability"].values())))
-    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_scope", [settings["alternative"], ('solve',), "solve_pattern"], "set_based_override")
-    #realization
+    target_db = ines_transform.add_item_to_DB(target_db, "stochastic_scope", [settings["alternative"], ('solve',), "solve_pattern"], "whole_model")
 
     #forecast interpolation
     if settings["t_improveForecastNew"]:
@@ -419,7 +436,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
     #'unitSizeMVA': not in ines (M volt amp)
     }
 
-    grid__node__unit_groups = source_db.get_entity_items(entity_class_name='grid__node__unit_group')
+    grid__node__unit__groups = source_db.get_entity_items(entity_class_name='grid__node__unit_group')
     annuity = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='annuity')
     parameter_values = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io')
     units = source_db.get_entity_items(entity_class_name='unit')
@@ -471,10 +488,10 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                 target_db = ines_transform.add_item_to_DB(target_db, 'lifetime', [param["alternative_name"], (param["entity_byname"][2],), target_class], lifetime)
                 target_db = ines_transform.add_item_to_DB(target_db, 'interest_rate', [param["alternative_name"], (param["entity_byname"][2],), target_class], r)
     
-        for entity in grid__node__unit_groups:
+        for entity in grid__node__unit__groups:
             group_entity_byname = (entity["entity_byname"][3],target_entity_byname)
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow', 
-                                                entity_byname=group_entity_byname, warn=True))
+                                                entity_byname=group_entity_byname), warn=True)
 
     #calculate start-up costs and emissions
     for unit in units:
@@ -867,7 +884,7 @@ def process_links(source_db, target_db, t_val__timestamp):
     for entity in grid__node__node__groups:
         target_entity_byname = (entity["entity_byname"][3],'link_'+entity["entity_byname"][1]+"_"+entity["entity_byname"][2])
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link', 
-                                            entity_byname=target_entity_byname, warn=True))
+                                            entity_byname=target_entity_byname), warn=True)
 
     return target_db
 
@@ -875,7 +892,7 @@ def diff_coeff(source_db, target_db, t_val__timestamp):
 
     for param in source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name = 'diffCoeff'):
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='node__node', 
-                                                                entity_byname=(param["entity_byname"][1], param["entity_byname"][2]), warn=True))
+                                                                entity_byname=(param["entity_byname"][1], param["entity_byname"][2])), warn=True)
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][1], param["entity_byname"][2]), "node_node"]
         value = api.from_database(param["value"], param["type"])
         target_db = ines_transform.add_item_to_DB(target_db, 'diffusion_coefficient', alt_ent_class_target, value)
@@ -886,9 +903,9 @@ def capacity_margin(source_db, target_db, t_val__timestamp):
 
     for param in source_db.get_parameter_value_items(entity_class_name='grid__node', parameter_definition_name = 'capacityMargin'):
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set', 
-                                                                entity_byname=(param["entity_byname"][2],), warn=True))
+                                                                entity_byname=(param["entity_byname"][2],)), warn=True)
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node', 
-                                                                entity_byname=(param["entity_byname"][2],param["entity_byname"][2]), warn=True))
+                                                                entity_byname=(param["entity_byname"][2],param["entity_byname"][2])), warn=True)
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][2],), "set"]
         value = api.from_database(param["value"], param["type"])
         target_db = ines_transform.add_item_to_DB(target_db, 'capacity_margin', alt_ent_class_target, value)
@@ -974,9 +991,9 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     restypes = source_db.get_entity_items(entity_class_name='restype')
     group__restypes = source_db.get_entity_items(entity_class_name='group__restype')
     group__restype__uds = source_db.get_entity_items(entity_class_name='group__restype__up_down')
-    gnns = source_db.get_entity_items(entity_class_name='grid__node__node')
     group__nodes = source_db.get_entity_items(entity_class_name='group__node')
-    gnur = source_db.get_entity_items(entity_class_name='grid__node__unit__restype')
+    gnurs = source_db.get_entity_items(entity_class_name='grid__node__unit__restype')
+    gnnrs = source_db.get_entity_items(entity_class_name='grid__node__node__restype')
     reserve_activation_durations = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'reserve_activation_duration') 
     reserve_lengths = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'reserve_length')
     gate_closures = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'gate_closure')
@@ -989,10 +1006,25 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     unit_fail = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'unit_fail')
     reserveReliability = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'reserveReliability') 
     reserve_increase_ratio = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'reserve_increase_ratio')
+    gnur_ups = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'up')
+    gnur_downs = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'down')
+    gnnr_ups =  source_db.get_parameter_value_items(entity_class_name='grid__node__node__restype', parameter_definition_name = 'up')
+    gnnr_downs = source_db.get_parameter_value_items(entity_class_name='grid__node__node__restype', parameter_definition_name = 'down')
     
     #update_offset
     #offlineReserveCapability
+    #portion_of_infeed_to_reserve   the coefficient is not applied, only the contingecy is made
 
+    #create entities first:
+    for entity in group__restypes:
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__reserve', entity_byname=entity["entity_byname"]), warn=True)  
+    for gnnr in gnnrs:
+        link_name  = f'link_{gnnr["entity_byname"][1]}_{gnnr["entity_byname"][2]}'
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='link__node__reserve', entity_byname=(link_name,gnnr["entity_byname"][1],gnnr["entity_byname"][3])), warn=True)     
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='link__node__reserve', entity_byname=(link_name,gnnr["entity_byname"][2],gnnr["entity_byname"][3])), warn=True)     
+    for gnur in gnurs:
+        entity_byname = (gnur["entity_byname"][2],gnur["entity_byname"][1],gnur["entity_byname"][3])
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='unit__node__reserve', entity_byname= entity_byname), warn=True)
 
     for restype in restypes:
         #should work on most cases, but might fail if same reserve has different reserve amounts for up and down
@@ -1005,24 +1037,6 @@ def create_reserves(source_db, target_db, t_val__timestamp):
                     up = True
                 elif entity["entity_byname"][2] == "down":
                     down = True
-        for param in LossOfTrans:
-            if param["entity_byname"][1] == restype["entity_byname"][0]:
-                for gnn in gnns:
-                    for pottr in portion_of_transfer_to_reserve:
-                        if gnn["entity_byname"] == pottr["entity_byname"]:
-                            gnn1 = False
-                            gnn2 = False
-                            for gr in group__restypes:
-                                for gn in group__nodes:
-                                    if gr["entity_byname"][0] == gn["entity_byname"][0]:
-                                        if gnn["entity_byname"][1] == gn["entity_byname"][1]:
-                                            gnn1 = True
-                                        if gnn["entity_byname"][2] == gn["entity_byname"][1]:
-                                            gnn2 = True
-                            if gnn1 ^ gnn2:
-                                alt_ent_class_target = [gnn["alternative_name"], gnn["entity_byname"], "link__node__reserve"]
-                                target_db = ines_transform.add_item_to_DB(target_db, "contingency_causing", alt_ent_class_target, "true")
-                                conting = True
 
         for param in portion_of_infeed_to_reserve:
             for unit_param in unit_fail:
@@ -1031,9 +1045,35 @@ def create_reserves(source_db, target_db, t_val__timestamp):
                     value = api.from_database(param["value"], param["type"])
                     if param["entity_byname"][3] == restype["entity_byname"][0] and value > 0:
                         conting = True
-                        alt_ent_class_target = [param["alternative_name"], (param["entity_byname"][1],param["entity_byname"][2],param["entity_byname"][3]), "unit__node__reserve"]
-                        target_db = ines_transform.add_item_to_DB(target_db, "contingency_causing", alt_ent_class_target, "true")
-
+                        alt_ent_class_target = [param["alternative_name"], (param["entity_byname"][2],param["entity_byname"][1],param["entity_byname"][3]), "unit__node__reserve"]
+                        target_db = ines_transform.add_item_to_DB(target_db, "contingency_causing", alt_ent_class_target, True)
+    
+        for pottr in portion_of_transfer_to_reserve:
+            gnn1 = False
+            gnn2 = False
+            for gr in group__restypes:
+                if gr["entity_byname"][1] == restype["entity_byname"][0]:
+                    for gn in group__nodes:
+                        if gr["entity_byname"][0] == gn["entity_byname"][0]:
+                            if pottr["entity_byname"][1] == gn["entity_byname"][1]:
+                                gnn1 = True
+                            if pottr["entity_byname"][2] == gn["entity_byname"][1]:
+                                gnn2 = True
+            if gnn1 ^ gnn2:
+                value = api.from_database(pottr["value"], pottr["type"])
+                link_name = 'link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2]
+                alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][1], restype["entity_byname"][0]), "link__node__reserve"]
+                target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, value)
+                alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][2], restype["entity_byname"][0]), "link__node__reserve"]
+                target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, value) 
+                for param in LossOfTrans:
+                    if param["entity_byname"][1] == restype["entity_byname"][0]:
+                        alt_ent_class_target = [pottr["alternative_name"], (link_name, param["entity_byname"][1], param["entity_byname"][3]), "link__node__reserve"]
+                        target_db = ines_transform.add_item_to_DB(target_db, "contingency_causing", alt_ent_class_target, True)
+                        alt_ent_class_target = [pottr["alternative_name"], (link_name, param["entity_byname"][2], param["entity_byname"][3]), "link__node__reserve"]
+                        target_db = ines_transform.add_item_to_DB(target_db, "contingency_causing", alt_ent_class_target, True)
+                        conting = True
+        
         if conting:
             reserve_type = "contingency"
         elif up and down:
@@ -1042,12 +1082,11 @@ def create_reserves(source_db, target_db, t_val__timestamp):
             reserve_type = "upward"
         elif down:
             reserve_type = "downward"
-
+    
         alt_ent_class_target = [settings["alternative"],  restype["entity_byname"], "reserve"]
-        target_db = ines_transform.add_item_to_DB(target_db, "reserve_type", alt_ent_class_target, reserve_type)
+        if conting or up or down:
+            target_db = ines_transform.add_item_to_DB(target_db, "reserve_type", alt_ent_class_target, reserve_type)
 
-    for entity in group__restypes:
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__reserve', entity_byname=entity["entity_byname"]), warn=True)      
     for param in reserve_activation_durations:
         value = api.from_database(param["value"], param["type"])
         duration = api.Duration(str(int(value*60))+"min")
@@ -1076,32 +1115,42 @@ def create_reserves(source_db, target_db, t_val__timestamp):
         value = api.from_database(param["value"], param["type"])
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][0], param["entity_byname"][1]), "set__reserve"]
         target_db = pass_timeseries(target_db, 'reserve_requirement', 'reserve_requirement_forecasts', value, alt_ent_class_target, t_val__timestamp)
-    for param in portion_of_infeed_to_reserve:
+    
+    for param in reserve_increase_ratio:
         value = api.from_database(param["value"], param["type"])
         alt_ent_class_target = [param["alternative_name"],(param["entity_byname"][2], param["entity_byname"][1],param["entity_byname"][3]), "unit__node__reserve"]
-        target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, duration)  
+        target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, value)  
 
-    for entity in gnur:
-        val1 = 1
-        val2 = 1
-        for param1 in reserveReliability:
-            if entity["entity_byname"] == param1["entity_byname"]:
-                val1 = api.from_database(param["value"], param["type"])
-        for param2 in reserve_increase_ratio:
-            if entity["entity_byname"] == param2["entity_byname"]:
-                val2 = api.from_database(param["value"], param["type"])
-        alt_ent_class_target = [entity["alternative_name"],(entity["entity_byname"][2], entity["entity_byname"][1],entity["entity_byname"][3]), "unit__node__reserve"]
-        target_db = ines_transform.add_item_to_DB(target_db, "reserve_provision_coefficient", alt_ent_class_target, val1*val2)
-    
-    for param in portion_of_transfer_to_reserve:
+    for param in gnur_ups:
         value = api.from_database(param["value"], param["type"])
-        link_name = 'link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2]
-        for restype in restypes:
-            alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][1], restype["entity_byname"][0]), "link__node__reserve"]
-            target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, value)
-            alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][2], restype["entity_byname"][0]), "link__node__reserve"]
-            target_db = ines_transform.add_item_to_DB(target_db, "reserve_requirement_factor", alt_ent_class_target, value) 
+        for rR in reserveReliability:
+            if param["entity_byname"] == rR["entity_byname"]:
+                value = value * api.from_database(rR["value"], rR["type"])
+        alt_ent_class_target = [param["alternative_name"] ,(param["entity_byname"][2], param["entity_byname"][1],param["entity_byname"][3]), "unit__node__reserve"]
+        target_db = ines_transform.add_item_to_DB(target_db, "reserve_provision_coefficient", alt_ent_class_target, value)
+    
+    for param in gnur_downs:
+        value = api.from_database(param["value"], param["type"])
+        for rR in reserveReliability:
+            if param["entity_byname"] == rR["entity_byname"]:
+                value = value * api.from_database(rR["value"], rR["type"])
+        alt_ent_class_target = [param["alternative_name"] ,(param["entity_byname"][2], param["entity_byname"][1],param["entity_byname"][3]), "unit__node__reserve"]
+        target_db = ines_transform.add_item_to_DB(target_db, "reserve_provision_coefficient", alt_ent_class_target, value)
 
+    #Is the reserve actually group or group-restype not just restype
+    #are links in reserves only on the border of the group
+    for param in gnnr_ups:
+        value = api.from_database(param["value"], param["type"])
+        link_name  = f'link_{param["entity_byname"][1]}_{param["entity_byname"][2]}'
+        alt_ent_class_target = [param["alternative_name"] , (link_name, param["entity_byname"][1], param["entity_byname"][3]), "link__node__reserve"]
+        target_db = ines_transform.add_item_to_DB(target_db, "reserve_provision_coefficient", alt_ent_class_target, value)
+    
+    for param in gnnr_downs:
+        value = api.from_database(param["value"], param["type"])
+        link_name  = f'link_{param["entity_byname"][1]}_{param["entity_byname"][2]}'
+        alt_ent_class_target = [param["alternative_name"] , (link_name, param["entity_byname"][1], param["entity_byname"][3]), "link__node__reserve"]
+        target_db = ines_transform.add_item_to_DB(target_db, "reserve_provision_coefficient", alt_ent_class_target, value)
+    
     return target_db
 
 def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
@@ -1110,40 +1159,48 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
     gnuios = source_db.get_entity_items(entity_class_name='grid__node__unit__io')
     constants = source_db.get_parameter_value_items(entity_class_name='unit__constraint', parameter_definition_name = 'constant')
     coefficients = source_db.get_parameter_value_items(entity_class_name='unit__constraint__node', parameter_definition_name = 'coefficient')
-    units = list(list())
+    ucs = list(list())
     for ucn in ucns:
-        if not any(ucn["entity_byname"][0] == unit[0] for unit in units):
-            units.append([ucn["entity_byname"][0],ucn["entity_byname"][1]])
+        if not any(ucn["entity_byname"][0] == unit[0] for unit in ucs):
+            ucs.append([ucn["entity_byname"][0],ucn["entity_byname"][1]])
 
-    for unit in units:
+    for uc in ucs:
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', 
-                                                                    entity_byname=('constraint_'+ unit[0],)), warn=True)
+                                                                    entity_byname=(f"constraint_{uc[0]}_{uc[1]}",)), warn=True)
         constant_value = 0
         for constant in constants:
-            if constant["entity_byname"][0] == unit[0]:
+            if constant["entity_byname"][0] == uc[0]:
                 constant_value = api.from_database(constant["value"], constant["type"])
-        target_db = ines_transform.add_item_to_DB(target_db, "constant", [settings['alternative'],('constraint_'+ unit[0],),'constraint'], constant_value) 
+        target_db = ines_transform.add_item_to_DB(target_db, "constant", [settings['alternative'],(f"constraint_{uc[0]}_{uc[1]}",),'constraint'], constant_value) 
 
-        if unit[1][0:2] == "eq":
+        if uc[1][0:2] == "eq":
             sense = "equal"
-        elif unit[1][0:2] == "gt": 
+        elif uc[1][0:2] == "gt": 
             sense = "greater_than"
         else:
             sense = "less_than"
-        target_db = ines_transform.add_item_to_DB(target_db, "sense", [settings['alternative'],('constraint_'+ unit[0],),'constraint'], sense) 
+        target_db = ines_transform.add_item_to_DB(target_db, "sense", [settings['alternative'],(f"constraint_{uc[0]}_{uc[1]}",),'constraint'], sense) 
 
 
-        for coefficient in coefficients:
-            if coefficient["entity_byname"][0] == unit[0]:
-                for gnuio in gnuios:
+        for gnuio in gnuios:
+            value_indexes = list()
+            value_values = list()
+            if gnuio["entity_byname"][2] == uc[0]:
+                for coefficient in coefficients:
                     if gnuio["entity_byname"][1] == coefficient["entity_byname"][2] and gnuio["entity_byname"][2] == coefficient["entity_byname"][0]:
                         coefficient_value = api.from_database(coefficient["value"], coefficient["type"])
-                        value = api.Map(['constraint_'+ unit[0]], [coefficient_value])
-                        if gnuio["entity_byname"][3] == 'input':
-                            target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [coefficient['alternative_name'],(coefficient["entity_byname"][2],coefficient["entity_byname"][0]),'node__to_unit'], value) 
-                        elif gnuio["entity_byname"][3] == 'output':
-                            target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [coefficient['alternative_name'],(coefficient["entity_byname"][0],coefficient["entity_byname"][2]),'unit__to_node'], value) 
+                        value_indexes.append(f"constraint_{uc[0]}_{uc[1]}")
+                        value_values.append(coefficient_value)
+                        alt = coefficient['alternative_name']
+            if len(value_indexes) > 0: 
+                value = api.Map(value_indexes, value_values)
+                if gnuio["entity_byname"][3] == 'input':
+                    target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][1],gnuio["entity_byname"][2]),'node__to_unit'], value) 
+                elif gnuio["entity_byname"][3] == 'output':
+                    target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][2],gnuio["entity_byname"][1]),'unit__to_node'], value) 
 
+
+    
     return target_db
 
 def create_node_capacities(source_db, target_db, t_val__timestamp):
@@ -1453,6 +1510,7 @@ def add_node_types(source_db, target_db):
     for node in source_db.get_entity_items(entity_class_name='node'):
         node_type = None
         found = False
+        alt = settings["alternative"]
         for price in prices:
             if price["entity_name"]== node["name"]:
                 node_type = "commodity"
@@ -1515,6 +1573,35 @@ def create_simple_timeseries(source_db, target_db, t_val__timestamp):
 
     return target_db
 
+def create_sets_from_grids(source_db, target_db):
+    grids = source_db.get_entity_items(entity_class_name='grid')
+    grid__nodes = source_db.get_entity_items(entity_class_name='grid__node')
+    grid__node__nodes = source_db.get_entity_items(entity_class_name='grid__node__node')
+    grid__node__unit__ios = source_db.get_entity_items(entity_class_name='grid__node__unit__io')
+
+    for grid in grids:
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("grid_"+grid["name"],)), warn=True)
+        for grid__node in grid__nodes:
+            if grid__node["entity_byname"][0] == grid["entity_byname"][0]:
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__node',
+                                                                        entity_byname=("grid_"+grid__node["entity_byname"][0], grid__node["entity_byname"][1])), warn=True)
+        for grid__node__node in grid__node__nodes:
+            if grid__node__node["entity_byname"][0] == grid["entity_byname"][0]:
+                link_name = f'link_{grid__node__node["entity_byname"][1]}_{grid__node__node["entity_byname"][2]}'
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link',
+                                                                        entity_byname=("grid_"+ grid__node__node["entity_byname"][0], link_name)), warn=True)
+
+        for gnuio in grid__node__unit__ios:
+            if gnuio["entity_byname"][0] == grid["entity_byname"][0]:
+                if gnuio["entity_byname"][3] == 'input':
+                    ent = ("grid_"+ gnuio["entity_byname"][0], gnuio["entity_byname"][1],gnuio["entity_byname"][2])
+                elif gnuio["entity_byname"][3] == 'output':
+                    ent = ("grid_"+ gnuio["entity_byname"][0],gnuio["entity_byname"][2],gnuio["entity_byname"][1])
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow',
+                                                                        entity_byname=ent), warn=True)
+
+    return target_db
+
 def add_entity_alternative_items(target_db):
     for entity_class in target_db.get_entity_class_items():
         for entity in target_db.get_entity_items(entity_class_name=entity_class["name"]):
@@ -1530,6 +1617,32 @@ def add_entity_alternative_items(target_db):
                     alternative_name=settings["alternative"],
                     active=True,
                 ))
+    return target_db
+
+def inflow_timeseries_from_csv(target_db, input_folder, t_val__timestamp):
+
+    input_folder = Path(f"./{input_folder}")
+    for filename in os.listdir(input_folder):
+        if filename.endswith(".csv"):
+            df = pd.read_csv(os.path.join(input_folder,filename),header = 0)
+            columns = df.columns[3:]
+            dff =  df['f']
+            forecasts = dff.drop_duplicates().values.tolist()
+            for node in columns.values:
+                inner_series = []
+                indexes = []
+                for forecast in forecasts:
+                    entity_byname = (node,)
+                    df2 = pd.DataFrame(data=df)
+                    df2.filter(items=[forecast], axis=0)
+                    t_vals = df2['t'].values.tolist()
+                    values = df2[node].values.tolist()
+                    timestamps = [stamp for stamp in t_val__timestamp.values()]
+                    out_vals = [values[t_vals.index(t_val)] for t_val in t_val__timestamp.keys() if t_val in t_vals]
+                    indexes.append(forecast)
+                    inner_series.append(api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step"))
+                value = api.Map(indexes,inner_series)
+                target_db = ines_transform.add_item_to_DB(target_db, 'flow_profile_forecasts', [settings["alternative"], entity_byname, "node"], value)
     return target_db
 
 ###############
@@ -1561,12 +1674,19 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
             if target_name_stoch:
                 print(f'processing stochastic timeseries:{target_name_stoch}')
                 inner_series = []
-                for i in value.values:
-                    t_vals = list(i.indexes)
+                forecasts = []
+                for i, val_map in enumerate(value.values):
+                    t_vals = list(val_map.indexes)
                     timestamps = [stamp for stamp in t_val__timestamp.values()]
-                    out_vals = [i.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
-                    inner_series.append(api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step"))
+                    out_vals = [val_map.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+                    timeseries = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
+                    if value.indexes[i] == 'f00':
+                        target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, timeseries, value_type="map")
+                    else:
+                        inner_series.append(timeseries)
+                        forecasts.append(value.indexes[i])
                 value.values = inner_series
+                value.indexes = forecasts
                 target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, value)
                 if not stochastic_group:
                     out_byname = ("stochastics",) + alt_ent_class_target[1]
@@ -1603,8 +1723,13 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
                                 price = step__price[1]
                                 break
                         values.append(price)
-                    inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
-                    forecasts.append(forecast)
+                    if forecast == 'f00':
+                        for i in values.indexes:
+                            timestamps.append(str(t_val__timestamp[i]))
+                        target_db = ines_transform.add_item_to_DB(target_db, target_param, alt_ent_class_target, price_timeseries, value_type="map")
+                    else:
+                        inner_price_timeseries.append(api.Map(t_val__timestamp.values(), values))
+                        forecasts.append(forecast)
                 price_timeseries = api.Map(forecasts, inner_price_timeseries)
                 target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, price_timeseries, value_type="map")
                 if not stochastic_group:
@@ -1658,10 +1783,10 @@ if __name__ == "__main__":
         save_folder = os.path.dirname(__file__)
         conversion_configuration(conversions = [save_folder+'/backbone_to_ines_entities.yaml', save_folder+'/backbone_to_ines_parameters.yaml', save_folder+'/backbone_to_ines_parameter_methods.yaml',
                                              save_folder+'/backbone_to_ines_parameters_to_relationships.yaml'], overwrite=True)
-    else:
+    else:   
         url_db_in = sys.argv[1]
         url_db_out = sys.argv[2]
-        settings_path = 'backbone_to_ines_settings.yaml'
+        settings_path = './backbone_to_ines_settings.yaml'
 
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
