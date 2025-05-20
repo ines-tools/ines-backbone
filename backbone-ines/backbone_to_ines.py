@@ -362,7 +362,8 @@ def create_timeline(source_db, target_db):
         sample = sample_names[i]
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='period',entity_byname=(sample,)), warn=True)
         period_duration = api.Duration(str((settings["ms_end"][sample]-settings["ms_start"][sample])*settings["stepLengthInHours"])+"h")
-        start_times.append(api.DateTime(timestamps[settings["ms_start"][sample]-1]))
+        start_time = api.DateTime(timestamps[settings["ms_start"][sample]-1])
+        start_times.append(start_time)
         period_durations.append(period_duration)
         if settings["p_msProbability"][sample]:
             sample_weight = settings["p_msProbability"][sample]
@@ -373,7 +374,7 @@ def create_timeline(source_db, target_db):
         else:
             sample_weight = 1
         target_db = ines_transform.add_item_to_DB(target_db, "years_represented", [settings["alternative"], (sample,), "period"], sample_weight)
-
+        target_db = ines_transform.add_item_to_DB(target_db, "start_time", [settings["alternative"], (sample,), "period"], start_time)
     #solve_pattern
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='solve_pattern',entity_byname=('solve',)), warn=True)
     target_db = ines_transform.add_item_to_DB(target_db, "period", [settings["alternative"], ('solve',), "solve_pattern"], api.Array(sample_names[0:settings["sample_count"]]))
@@ -386,7 +387,9 @@ def create_timeline(source_db, target_db):
         horizon = api.Duration(str(settings["t_horizon"] * settings["stepLengthInHours"])+"h")
         target_db = ines_transform.add_item_to_DB(target_db, "rolling_jump", [settings["alternative"], ('solve',), "solve_pattern"], jump)
         target_db = ines_transform.add_item_to_DB(target_db, "rolling_horizon", [settings["alternative"], ('solve',), "solve_pattern"], horizon)
-
+    if settings["stepLengthInHours"]:
+        time_resolution = api.Duration(str(settings["stepLengthInHours"])+"h")
+        target_db = ines_transform.add_item_to_DB(target_db, "time_resolution", [settings["alternative"], ('solve',), "solve_pattern"], time_resolution)
     #stochastic information
     ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=('stochastics',)), warn=True)
     target_db = ines_transform.add_item_to_DB(target_db, "stochastic_forecast_weights", [settings["alternative"], ('stochastics',), "set"],
@@ -743,7 +746,7 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
 
     for param in investMIP:
         value = api.from_database(param["value"], param["type"])
-        if value == 1.0:
+        if value != 0.0:
             alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
             target_db = ines_transform.add_item_to_DB(target_db, 'investment_uses_integer', alt_ent_class_target, True)
 
@@ -862,7 +865,7 @@ def process_links(source_db, target_db, t_val__timestamp):
     for param in investMIP:
         target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
         value = api.from_database(param["value"], param["type"])
-        if value == 1.0:
+        if value != 0.0:
             alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
             target_db = ines_transform.add_item_to_DB(target_db, 'investment_uses_integer', alt_ent_class_target, True)
     for param in availabilities:
@@ -1500,6 +1503,7 @@ def create_group_constraints(source_db, target_db):
 def add_node_types(source_db, target_db):
 
     grid_node_boudaries =  source_db.get_entity_items(entity_class_name='grid__node__boundary')
+    use_prices = source_db.get_parameter_value_items(entity_class_name='grid__node', parameter_definition_name = 'usePrice')
     prices = source_db.get_parameter_value_items(entity_class_name='node', parameter_definition_name = 'price')
     price_changes = source_db.get_parameter_value_items(entity_class_name='node', parameter_definition_name = 'priceChange')
     node_balances = source_db.get_parameter_value_items(entity_class_name='grid__node', parameter_definition_name = 'nodeBalance')
@@ -1525,26 +1529,34 @@ def add_node_types(source_db, target_db):
                     found = True
                     break
         if not found:
+            for use_price in use_prices:
+                if use_price["entity_byname"][1] == node["name"]:
+                    if api.from_database(use_price["value"],use_price["type"]) != 0.0:
+                        node_type = "commodity"
+                        alt = use_price["alternative_name"]
+                        found = True
+                        break
+        if not found:
             for grid_node_boudary in grid_node_boudaries:
                 if ((grid_node_boudary["entity_byname"][2] == 'upwardLimit' or 
                         grid_node_boudary["entity_byname"][2] == 'downwardLimit') and
                         grid_node_boudary["entity_byname"][1] == node["name"]):
                     for use_constant in use_constants:
-                        if use_constant["entity_name"] == grid_node_boudary["name"] and api.from_database(use_constant["value"],use_constant["type"]) == 1.0:
+                        if use_constant["entity_name"] == grid_node_boudary["name"] and api.from_database(use_constant["value"],use_constant["type"]) != 0.0:
                             node_type = "storage" 
                             alt =  use_constant["alternative_name"]
                             found = True
                             break
                     if not found:
                         for use_timeserie in use_timeseries:
-                            if use_timeserie["entity_name"] == grid_node_boudary["name"] and api.from_database(use_timeserie["value"],use_timeserie["type"]) == 1.0:
+                            if use_timeserie["entity_name"] == grid_node_boudary["name"] and api.from_database(use_timeserie["value"],use_timeserie["type"]) != 0.0:
                                 node_type = "storage" 
                                 alt = use_timeserie["alternative_name"]
                                 found = True
                                 break  
         if not found:
             for node_balance in node_balances:
-                if node_balance["entity_byname"][1]== node["name"] and api.from_database(node_balance["value"],node_balance["type"]) == 1.0:
+                if node_balance["entity_byname"][1]== node["name"] and api.from_database(node_balance["value"],node_balance["type"]) != 0.0:
                     node_type = "balance"
                     alt = node_balance["alternative_name"]
                     break
@@ -1619,6 +1631,8 @@ def add_entity_alternative_items(target_db):
                 ))
     return target_db
 
+
+#not jet functional
 def inflow_timeseries_from_csv(target_db, input_folder, t_val__timestamp):
 
     input_folder = Path(f"./{input_folder}")
@@ -1688,6 +1702,8 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
                 value.values = inner_series
                 value.indexes = forecasts
                 target_db = ines_transform.add_item_to_DB(target_db, target_name_stoch, alt_ent_class_target, value)
+
+                #add entity to the stochastic set
                 if not stochastic_group:
                     out_byname = ("stochastics",) + alt_ent_class_target[1]
                 else:
