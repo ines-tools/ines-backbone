@@ -4,7 +4,7 @@ default_interest_rate: 0.05
 
 #t values are converted to timestamps, so this corresponds to the first t value, the rest are calculated using stepLengthInHours
 #for Northern european model this should be: '1982-01-01T00:00:00'
-first_timestamp: '2013-01-01T00:00:00'
+first_timestamp: '1982-01-01T00:00:00'
 
 timestep_range: ["t000000","t400000"]
 sample_range: ["s000","s001"]
@@ -12,9 +12,9 @@ forecast_range: ["f00","f03"]
 
 #t_start, t_end and stepLengthInHours are mandatory
 t_start: 1
-t_end: 4000
-t_horizon: 2000
-t_jump: 1000
+t_end: 8760
+t_horizon:
+t_jump:
 stepLengthInHours: 1
 
 ###Optional, for northern european model use. Will not take effect unless t_start or t_end are empty
@@ -34,8 +34,10 @@ p_msAnnuityWeight: {'s000': 1}
 
 #forecast params
 mf_realization: 'f00' 
-p_mfProbability: {'f00': 1, 'f01': 0.6, 'f02': 0.2, 'f03': 0.2}
-t_improveForecastNew: 168
+p_mfProbability: {'f00': 1}
+
+#for forecast interpolation
+t_improveForecastNew:
 
 #the data without a prior alternative will use this instead
 alternative: "Backbone"

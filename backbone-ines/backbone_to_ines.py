@@ -6,12 +6,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-#from ines_tools import ines_transform
 from ines_tools import ines_transform
 import spinedb_api as api
 from sqlalchemy.exc import DBAPIError
 from spinedb_api.exception import NothingToCommit
-#from spinedb_api import purge
 
 def main():
     # transform spine db with backbone data (source db) into a spine db that already has the ines structure (target_db)
@@ -492,7 +490,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                 target_db = ines_transform.add_item_to_DB(target_db, 'interest_rate', [param["alternative_name"], (param["entity_byname"][2],), target_class], r)
     
         for entity in grid__node__unit__groups:
-            group_entity_byname = (entity["entity_byname"][3],target_entity_byname)
+            group_entity_byname = (entity["entity_byname"][3],target_entity_byname[0], target_entity_byname[1])
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow', 
                                                 entity_byname=group_entity_byname), warn=True)
 
@@ -593,6 +591,7 @@ def process_capacities(source_db, target_db, t_val__timestamp):
     unit_counts = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name='unitCount')
     
     for source_entity in source_db.get_entity_items(entity_class_name='unit'):
+        # if unit count not given, assume 1, unit count is moved otherwise by the helper function
         added = False
         for alt in alternatives:
             if not added:
@@ -609,17 +608,19 @@ def process_capacities(source_db, target_db, t_val__timestamp):
             target_class_name= "unit__to_node"
             target_entity_byname = (source_entity["entity_byname"][2],source_entity["entity_byname"][1])
 
+        #add the capacity and unit count
         unit_capacity = None
         for capacity in capacities:
             if source_entity["name"] == capacity["entity_name"]:
                 capacity_value = api.from_database(capacity["value"], capacity["type"])
-                unit_count_value=1
+                unit_count_value = 1
                 for unit_count in unit_counts:
                     if source_entity["name"] == unit_count["entity_name"]:
                         unit_count_value = api.from_database(unit_count["value"], unit_count["type"])
                 unit_capacity =  capacity_value/unit_count_value
                 alt_ent_class_target = [capacity["alternative_name"], target_entity_byname, target_class_name]
                 target_db = ines_transform.add_item_to_DB(target_db, 'capacity', alt_ent_class_target, unit_capacity, value_type=True)
+        #if capacity not given, check if unit size is given and use that
         if not unit_capacity:
             for unit_size in unit_sizes:
                 if source_entity["name"] == unit_size["entity_name"]:
