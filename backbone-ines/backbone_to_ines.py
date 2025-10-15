@@ -570,15 +570,15 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                             prices[key] = value
                         else:
                             prices[key] = prices[key] + value
-        if len(prices.keys()) > 1:
-            out = api.Map(prices.keys(),prices.values())
+        if len(list(prices.keys())) > 1:
+            out = api.Map([str(x) for x in prices.keys()],list(prices.values()))
             target_db = ines_transform.add_item_to_DB(target_db, 'startup_cost_tiers', [alt, unit["entity_byname"] ,"unit"], out, value_type=True)
-        elif len(prices.keys()) == 1:
+        elif len(list(prices.keys())) == 1:
             target_db = ines_transform.add_item_to_DB(target_db, 'startup_cost', [alt, unit["entity_byname"] ,"unit"], prices.popitem()[1], value_type=True)
-        if len(emissions.keys()) > 1:
-            out = api.Map(emissions.keys(),emissions.values())
+        if len(list(emissions.keys())) > 1:
+            out = api.Map([str(x) for x in emissions.keys()],list(emissions.values()))
             target_db = ines_transform.add_item_to_DB(target_db, 'startup_co2_emission_tiers', [alt, unit["entity_byname"] ,"unit"], out, value_type=True)
-        elif len(emissions.keys()) == 1:
+        elif len(list(emissions.keys())) == 1:
             target_db = ines_transform.add_item_to_DB(target_db, 'startup_co2_emission', [alt, unit["entity_byname"] ,"unit"], emissions.popitem()[1], value_type=True)
                         
     return target_db
@@ -731,15 +731,15 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
         cool_down_tiers = dict()
         for param in startWarmAfterXHourss:
             if unit["entity_byname"] == param["entity_byname"]:
-                cool_down_tiers[1] = api.from_database(param["value"], param["type"]) * 60
+                cool_down_tiers["1"] = api.from_database(param["value"], param["type"]) * 60
                 alt = param["alternative_name"]
         for param in startColdAfterXhourss:
             if unit["entity_byname"] == param["entity_byname"]:
-                cool_down_tiers[2] = api.from_database(param["value"], param["type"]) * 60
+                cool_down_tiers["2"] = api.from_database(param["value"], param["type"]) * 60
                 alt = param["alternative_name"]
-        if len(cool_down_tiers.keys())>0:
-            val = api.Map(cool_down_tiers.keys(),cool_down_tiers.values())
-            target_db = ines_transform.add_item_to_DB(target_db, 'investment_uses_integer', [alt, unit["entity_byname"], unit], val)
+        if len(list(cool_down_tiers.keys())) > 0:
+            val = api.Map(list(cool_down_tiers.keys()),list(cool_down_tiers.values()))
+            target_db = ines_transform.add_item_to_DB(target_db, 'cooling_time_to_tiers', [alt, unit["entity_byname"], "unit"], val)
 
     for param in unit_availabilities:
         value =  api.from_database(param["value"], param["type"])
@@ -1257,6 +1257,7 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                     for timeseries in timeseriess:
                         if gnb["entity_byname"] == timeseries["entity_byname"]:
                             out = api.from_database(timeseries["value"], timeseries["type"])
+                            #search for the max value in the timeseries, two or one dimensional
                             max_val = 0
                             if isinstance(out.values[0], api.parameter_value.Map):
                                 for values_map in out.values:
