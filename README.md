@@ -20,9 +20,13 @@ Change the time and stochastic forecast settings to match your model in backbone
 Transform the backbone gdx file to spine database using the workflow that comes with the backbone.
 Add time settings to backbone_to_ines_settings.yaml this includes the information that is in scheduleInits.gms.
 
+### On timeseries
+
+All parameter data needs to be in the gdx file. If timeseries are not, as with northern european model, they can be added to it by running backbone with --debug. Adding timeseries directly to the ines transformation is in the future development plan.
+
 ### Option 1. Use directly from command line
 
-Make sure that the environment is on where the spine-toolbox installed.
+Activate the spine-toolbox environment. Go to the folder ines-backbone/backbone-ines
 
 The command to transform is:
 
@@ -30,11 +34,11 @@ The command to transform is:
 python backbone_to_ines.py path_to_input_db path_to_output_db
 ```
 
-where, input_db is the backbone database and output_db is database of the ines-spec.
+where, input_db is the backbone database and output_db is database of the ines-spec. Note that the paths need to be in format: "sqlite:///path/to/somewhere/file.sqlite"
 
 ### Option 2. Use the toolbox project
 
-Open folder backbone_to_ines_workflow as a spine project. 
+Open folder ines-backbone as a spine project. ![open_project](./docs/open_project.png)
 It contains 3 elements:
 + 1. database for backbone data in spine format
     + main file: Set the path to the backbone_db
@@ -43,6 +47,10 @@ It contains 3 elements:
     + additional file = backbone_to_ines_settings.yaml
 + 3. database for pypsa data in ines format
     + main file: set the path to the ines_db
+
+Run the backbone_to_ines_transform tool. ![run_tool](./docs/run_the_tool.png)
+
+One can also create bigger workflows in spine toolbox where the transformation tool is a part of it.
 
 ## Update
 
@@ -53,9 +61,6 @@ Git pull
 
 The backbone_to_ines_settings.yaml file is not updated, but the template backbone_to_ines_settings_template.yaml is. Copy it and rename it to backbone_to_ines_settings.yaml.
 
-## On timeseries
-
-All parameter data needs to be in the gdx file. If timeseries are not, as with northern european model, they can be added to it by running backbone with --debug. Adding timeseries directly to the ines transformation is in the future development plan.
 
 ## Notes about the transformation
 
