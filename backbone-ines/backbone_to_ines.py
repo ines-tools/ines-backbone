@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from ines_tools import ines_transform
+from ines_tools import ines_initialize
 import spinedb_api as api
 from sqlalchemy.exc import DBAPIError
 from spinedb_api.exception import NothingToCommit
@@ -19,25 +20,10 @@ def main():
             #purge.purge(target_db, purge_settings=None)
             # add ines structure
             # empty database except for ines structure
-            target_db.purge_items('parameter_value')
-            target_db.purge_items('entity')
-            target_db.purge_items('alternative')
-            target_db.refresh_session()
-            target_db.commit_session("Purged everything except for the existing ines structure")
-            # copy alternatives and scenarios
-            for alternative in source_db.get_alternative_items():
-                target_db.add_alternative_item(name=alternative["name"])
-            for scenario in source_db.get_scenario_items():
-                target_db.add_scenario_item(name=scenario["name"])
-            for scenario_alternative in source_db.get_scenario_alternative_items():
-                target_db.add_scenario_alternative_item(
-                    alternative_name=scenario_alternative["alternative_name"],
-                    scenario_name=scenario_alternative["scenario_name"],
-                    rank=scenario_alternative["rank"]
-                )
-            # commit changes
-            target_db.refresh_session()
-            target_db.commit_session("Added scenarios and alternatives")
+            target_db = ines_initialize.purge_db_from_data(target_db)
+            source_db = ines_initialize.fetch_data(source_db)
+            target_db = ines_initialize.copy_alternatives_scenarios(source_db, target_db)
+
             #Add entities that are always there
             target_db = add_base_entities(target_db)
 
@@ -323,8 +309,6 @@ def create_timeline(source_db, target_db):
 
     timestep_names = range_to_array(settings["timestep_range"])
     sample_names = range_to_array(settings["sample_range"])
-    forecast_names = range_to_array(settings["forecast_range"])
-    #z_names = range_to_array(settings["z_range"])
 
     #timestamp map
     t_val__timestamp = dict()
@@ -676,59 +660,12 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
     unit_availabilities = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'availability')
     startColdAfterXhourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startColdAfterXhours')
     startWarmAfterXHourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startWarmAfterXHours')
-    
-    for param in efficiency:
-        value = api.from_database(param["value"], param["type"])
-        effs = []
-        ops = []
-        for i in range(0,len(value.values)):
-            if value.indexes[i][0:3] == "eff":
-                effs.append(value.values[i])
-            if value.indexes[i][0:2] == "op": 
-                ops.append(value.values[i]) 
-            if value.indexes[i] == "section":
-                ops.insert(0,0)
-                effs.insert(0,value.values[i])
-
-            if value.indexes[i][0:3] == "hr":
-                effs.append(1/(value.values[i]/3.6))
-            if value.indexes[i][0:2] == "hrop": 
-                ops.append(value.values[i]) 
-            if value.indexes[i] == "hrsection":
-                ops.insert(0,0)
-                effs.insert(0,1/(value.values[i]/3.6))
-
-            if value.indexes[i] == "opFirstCross":
-                cannot_convert.append("Efficiency parameter opFirstCross cannot be converted in " + param["entity_byname"] +"\n")
-        #when single eff value back bone has two eff points and one op
-        if len(ops) == 1:
-            outval = float(effs[0])
-            conversion_method = "constant_efficiency"
-
-        elif len(effs) > 0 and len(ops) > 0:
-            outval = api.Map(ops,effs)
-            if len(ops) == 2:
-                conversion_method = "partial_load_efficiency"
-            else:
-                conversion_method = "piecewise_linear"
-        #out
-        alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
-        target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_target, outval)
-        target_db = ines_transform.add_item_to_DB(target_db, 'conversion_method', alt_ent_class_target, conversion_method)
-
-
-    #eff00, f, t, val 
-    #only eff00 used, constant for each time step
-    for param in efficiency_ts:
-        value = api.from_database(param["value"], param["type"])
-        if len(value.indexes) > 1:
-            cannot_convert.append("INES does not support piecewise linear timeseries for efficiency (4d map)")
-        else:
-            target_db = pass_timeseries(target_db, 'efficiency', 'efficiency_forecasts', value.values, [param["alternative_name"], (param["entity_byname"][0],), "unit"], t_val__timestamp)
-   
+    effLevel__effSelector__unit =  source_db.get_entity_items(entity_class_name='effLevel__effSelector__unit')
 
     for unit in units:
+        #first check if tiered unit
         cool_down_tiers = dict()
+        tiered = False
         for param in startWarmAfterXHourss:
             if unit["entity_byname"] == param["entity_byname"]:
                 cool_down_tiers["1"] = api.from_database(param["value"], param["type"]) * 60
@@ -740,7 +677,80 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
         if len(list(cool_down_tiers.keys())) > 0:
             val = api.Map(list(cool_down_tiers.keys()),list(cool_down_tiers.values()))
             target_db = ines_transform.add_item_to_DB(target_db, 'cooling_time_to_tiers', [alt, unit["entity_byname"], "unit"], val)
+            tiered = True
+        
+        #Check startup method
+        # Here we are using only the effLevel level1 and ignoring the levels used with longer step sizes
+        # when rampToMinLoad and rampFromMinLoad are added, these units would use the "trajectory" method
+        for entity in effLevel__effSelector__unit:
+            if unit["entity_byname"][0] == entity["entity_byname"][2]:
+                if entity["entity_byname"][0] == "level1":
+                    if entity["entity_byname"][1] == "directOff":
+                        method = "no_startup"
+                    elif entity["entity_byname"][1] == "directOnLP":
+                        if tiered:
+                            method = "linear_with_tiers"
+                        else:
+                            method = "linear"
+                    elif entity["entity_byname"][1] == "directOnMIP":
+                        if tiered:
+                            method = "integer_with_tiers"
+                        else:
+                            method = "integer"
+                    target_db = ines_transform.add_item_to_DB(target_db, 'startup_method', [settings["alternative"], (entity["entity_byname"][2],) ,"unit"], method)
+                    break
 
+        for param in efficiency:
+            if unit["entity_byname"] == param["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                effs = []
+                ops = []
+                for i in range(0,len(value.values)):
+                    if value.indexes[i][0:3] == "eff":
+                        effs.append(value.values[i])
+                    if value.indexes[i][0:2] == "op": 
+                        ops.append(value.values[i]) 
+                    if value.indexes[i] == "section":
+                        ops.insert(0,0)
+                        effs.insert(0,value.values[i])
+
+                    if value.indexes[i][0:3] == "hr":
+                        effs.append(1/(value.values[i]/3.6))
+                    if value.indexes[i][0:2] == "hrop": 
+                        ops.append(value.values[i]) 
+                    if value.indexes[i] == "hrsection":
+                        ops.insert(0,0)
+                        effs.insert(0,1/(value.values[i]/3.6))
+
+                    if value.indexes[i] == "opFirstCross":
+                        cannot_convert.append("Efficiency parameter opFirstCross cannot be converted in " + param["entity_byname"] +"\n")
+                #when single eff value back bone has two eff points and one op
+                if method == "no_startup" or len(ops) == 1:
+                    outval = max([float(eff) for eff in effs])
+                    conversion_method = "constant_efficiency"
+
+                elif len(effs) > 0 and len(ops) > 0:
+                    outval = api.Map(ops,effs)
+                    if len(ops) == 2:
+                        conversion_method = "partial_load_efficiency"
+                    else:
+                        conversion_method = "piecewise_linear"
+
+                #out
+                alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
+                target_db = ines_transform.add_item_to_DB(target_db, 'efficiency', alt_ent_class_target, outval)
+                target_db = ines_transform.add_item_to_DB(target_db, 'conversion_method', alt_ent_class_target, conversion_method)
+
+
+    #eff00, f, t, val 
+    #only eff00 used, constant for each time step
+    for param in efficiency_ts:
+        value = api.from_database(param["value"], param["type"])
+        if len(value.indexes) > 1:
+            cannot_convert.append("INES does not support piecewise linear timeseries for efficiency (4d map)")
+        else:
+            target_db = pass_timeseries(target_db, 'efficiency', 'efficiency_forecasts', value.values, [param["alternative_name"], (param["entity_byname"][0],), "unit"], t_val__timestamp)
+   
     for param in unit_availabilities:
         value =  api.from_database(param["value"], param["type"])
         target_db = pass_timeseries(target_db, 'availability', 'availability_forecasts', value, [param["alternative_name"], (param["entity_byname"][0],), "unit"], t_val__timestamp)
@@ -750,23 +760,6 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
         if value != 0.0:
             alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
             target_db = ines_transform.add_item_to_DB(target_db, 'investment_uses_integer', alt_ent_class_target, True)
-
-
-    #start-up method
-    # Here we are using only the effLevel level1 and ignoring the levels used with longer step sizes
-    # when rampToMinLoad and rampFromMinLoad are added, these units would use the "trajectory" method
-
-    effLevel__effSelector__unit =  source_db.get_entity_items(entity_class_name='effLevel__effSelector__unit')
-
-    for entity in effLevel__effSelector__unit:
-        if entity["entity_byname"][0] == "level1":
-            if entity["entity_byname"][1] == "directOff":
-                method = "no_startup"
-            elif entity["entity_byname"][1] == "directOnLP":
-                method = "linear"
-            elif entity["entity_byname"][1] == "directOnMIP":
-                method = "integer"
-            target_db = ines_transform.add_item_to_DB(target_db, 'startup_method', [settings["alternative"], (entity["entity_byname"][2],) ,"unit"], method)
 
     return target_db
 
@@ -828,12 +821,12 @@ def process_links(source_db, target_db, t_val__timestamp):
             if transferCapInvLimit["entity_name"] == link["name"]:
                 transferCapInvLimit_value = api.from_database(transferCapInvLimit["value"], transferCapInvLimit["type"])
                 alt_ent_class_target = [transferCapInvLimit["alternative_name"], target_entity_byname, 'link']
-            if unit_size_value:
-                links_max_count = (transferCapInvLimit_value + link_count)/unit_size_value
-                target_db = ines_transform.add_item_to_DB(target_db, 'links_max_cumulative', alt_ent_class_target, links_max_count)
-            else:
-                links_max_count = 1
-                target_db = ines_transform.add_item_to_DB(target_db, 'links_max_cumulative', alt_ent_class_target, links_max_count)
+                if unit_size_value:
+                    links_max_count = (transferCapInvLimit_value + link_count)/unit_size_value
+                    target_db = ines_transform.add_item_to_DB(target_db, 'links_max_cumulative', alt_ent_class_target, links_max_count)
+                else:
+                    links_max_count = 1
+                    target_db = ines_transform.add_item_to_DB(target_db, 'links_max_cumulative', alt_ent_class_target, links_max_count)
 
     for param in variableTransCost:
         target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
@@ -1159,23 +1152,24 @@ def create_reserves(source_db, target_db, t_val__timestamp):
 
 def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
 
-    ucns = source_db.get_entity_items(entity_class_name='unit__constraint__node')
     gnuios = source_db.get_entity_items(entity_class_name='grid__node__unit__io')
     constants = source_db.get_parameter_value_items(entity_class_name='unit__constraint', parameter_definition_name = 'constant')
+    unit_constraints = source_db.get_entity_items(entity_class_name='unit__constraint')
     coefficients = source_db.get_parameter_value_items(entity_class_name='unit__constraint__node', parameter_definition_name = 'coefficient')
-    ucs = list(list())
-    for ucn in ucns:
-        if not any(ucn["entity_byname"][0] == unit[0] for unit in ucs):
-            ucs.append([ucn["entity_byname"][0],ucn["entity_byname"][1]])
+    units = list()
 
-    for uc in ucs:
+    for unit_constraint in unit_constraints:
+        if unit_constraint["entity_byname"][0] not in units:
+            units.append(unit_constraint["entity_byname"][0])
+            
+        uc = unit_constraint["entity_byname"]
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', 
-                                                                    entity_byname=(f"constraint_{uc[0]}_{uc[1]}",)), warn=True)
+                                                                    entity_byname=(f"{uc[0]}_{uc[1]}",)), warn=True)
         constant_value = 0
         for constant in constants:
-            if constant["entity_byname"][0] == uc[0]:
+            if constant["entity_byname"] == uc:
                 constant_value = api.from_database(constant["value"], constant["type"])
-        target_db = ines_transform.add_item_to_DB(target_db, "constant", [settings['alternative'],(f"constraint_{uc[0]}_{uc[1]}",),'constraint'], constant_value) 
+        target_db = ines_transform.add_item_to_DB(target_db, "constant", [settings['alternative'],(f"{uc[0]}_{uc[1]}",),'constraint'], constant_value) 
 
         if uc[1][0:2] == "eq":
             sense = "equal"
@@ -1183,28 +1177,27 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
             sense = "greater_than"
         else:
             sense = "less_than"
-        target_db = ines_transform.add_item_to_DB(target_db, "sense", [settings['alternative'],(f"constraint_{uc[0]}_{uc[1]}",),'constraint'], sense) 
+        target_db = ines_transform.add_item_to_DB(target_db, "sense", [settings['alternative'],(f"{uc[0]}_{uc[1]}",),'constraint'], sense) 
 
-
+    
+    for unit in units:            
         for gnuio in gnuios:
-            value_indexes = list()
-            value_values = list()
-            if gnuio["entity_byname"][2] == uc[0]:
+            if gnuio["entity_byname"][2] == unit:
+                value_indexes = list()
+                value_values = list()
                 for coefficient in coefficients:
                     if gnuio["entity_byname"][1] == coefficient["entity_byname"][2] and gnuio["entity_byname"][2] == coefficient["entity_byname"][0]:
                         coefficient_value = api.from_database(coefficient["value"], coefficient["type"])
-                        value_indexes.append(f"constraint_{uc[0]}_{uc[1]}")
+                        value_indexes.append(f"{coefficient["entity_byname"][0]}_{coefficient["entity_byname"][1]}")
                         value_values.append(coefficient_value)
                         alt = coefficient['alternative_name']
-            if len(value_indexes) > 0: 
-                value = api.Map(value_indexes, value_values)
-                if gnuio["entity_byname"][3] == 'input':
-                    target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][1],gnuio["entity_byname"][2]),'node__to_unit'], value) 
-                elif gnuio["entity_byname"][3] == 'output':
-                    target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][2],gnuio["entity_byname"][1]),'unit__to_node'], value) 
+                if len(value_indexes) > 0: 
+                    value = api.Map(value_indexes, value_values)
+                    if gnuio["entity_byname"][3] == 'input':
+                        target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][1],gnuio["entity_byname"][2]),'node__to_unit'], value) 
+                    elif gnuio["entity_byname"][3] == 'output':
+                        target_db = ines_transform.add_item_to_DB(target_db, "constraint_flow_coefficient", [alt,(gnuio["entity_byname"][2],gnuio["entity_byname"][1]),'unit__to_node'], value) 
 
-
-    
     return target_db
 
 def create_node_capacities(source_db, target_db, t_val__timestamp):
@@ -1225,99 +1218,164 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
     useConstants = source_db.get_parameter_value_items(entity_class_name='grid__node__boundary', parameter_definition_name = 'useConstant')
     timeseriess = source_db.get_parameter_value_items(entity_class_name='grid__node__boundary', parameter_definition_name = 'timeseries')
     useTimeseriess = source_db.get_parameter_value_items(entity_class_name='grid__node__boundary', parameter_definition_name = 'useTimeSeries')
+    unit_sizes = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name = 'unitSize')
     unit_capacities = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name = 'capacity')
     unit_counts = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name = 'unitCount')
     uLCRs = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name = 'upperLimitCapacityRatio')
     
     for node in nodes:
         out = 0
-        time_s = False
         eSPUOS = 1
         for energyStoredPerUnitOfState in energyStoredPerUnitOfStates:
             if node["entity_byname"][0] == energyStoredPerUnitOfState["entity_byname"][1]:
                 eSPUOS = api.from_database(energyStoredPerUnitOfState["value"],energyStoredPerUnitOfState["type"])
-             
+        # first search for the capacity from upward limit, the lower limit is also per unit so the capacity is needed first
+        capacity = 0
+        capacity_found = False
         for gnb in gnbs:
             multi = 1
             for multiplier in multipliers:
                 if gnb["entity_byname"] == multiplier["entity_byname"]:
                     multi = api.from_database(multiplier["value"], multiplier["type"])
-            if any(gnb["entity_byname"] == useConstant["entity_byname"] for useConstant in useConstants):
-                for constant in constants:
-                    if gnb["entity_byname"] == constant["entity_byname"]:
-                        capacity = api.from_database(constant["value"], constant["type"]) * multi*eSPUOS
-                        node_alt_ent_class_target = [constant["alternative_name"], (gnb["entity_byname"][1],), "node"]
-                        if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "upwardLimit":
-                            target_db = ines_transform.add_item_to_DB(target_db, 'storages_existing', node_alt_ent_class_target, 1)
-                            target_db = ines_transform.add_item_to_DB(target_db, 'storage_capacity', node_alt_ent_class_target, capacity)
-                        if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "downwardLimit":
-                            target_db = ines_transform.add_item_to_DB(target_db, 'storage_state_lower_limit',  node_alt_ent_class_target, out)
-
-            elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
-                for timeseries in timeseriess:
-                    if gnb["entity_byname"] == timeseries["entity_byname"]:
-                        out = api.from_database(timeseries["value"], timeseries["type"])
-                        #search for the max value in the timeseries, two or one dimensional
-                        capacity = 0
-                        if isinstance(out.values[0], api.parameter_value.Map):
-                            for values_map in out.values:
-                                for val in values_map.values:
+            if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "upwardLimit":
+                if any(gnb["entity_byname"] == useConstant["entity_byname"] for useConstant in useConstants):
+                    for constant in constants:
+                        if gnb["entity_byname"] == constant["entity_byname"]:
+                            capacity = api.from_database(constant["value"], constant["type"]) * multi*eSPUOS
+                            alt = constant["alternative_name"]
+                elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
+                    for timeseries in timeseriess:
+                        if gnb["entity_byname"] == timeseries["entity_byname"]:
+                            out = api.from_database(timeseries["value"], timeseries["type"])
+                            alt = timeseries["alternative_name"]
+                            #search for the max value in the timeseries, two or one dimensional
+                            if isinstance(out.values[0], api.parameter_value.Map):
+                                for values_map in out.values:
+                                    for val in values_map.values:
+                                        val = val * multi *eSPUOS
+                                        if val > capacity:
+                                            capacity = val
+                            else:
+                                for val in out.values:
                                     val = val * multi *eSPUOS
                                     if val > capacity:
-                                        capacity = val
-                        else:
-                            for val in out.values:
-                                val = val * multi *eSPUOS
-                                if val > capacity:
-                                        capacity = val
-                        node_alt_ent_class_target = [timeseries["alternative_name"], (gnb["entity_byname"][1],), "node"]
-                        if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "upwardLimit":
-                            target_db = ines_transform.add_item_to_DB(target_db, 'storages_existing', node_alt_ent_class_target, 1)
-                            target_db = ines_transform.add_item_to_DB(target_db, 'storage_capacity', node_alt_ent_class_target, capacity)
-                        
-                        if isinstance(out.values[0], api.parameter_value.Map):
-                            for values_map in out.values:
-                                for val in values_map.values:
-                                    val = val / capacity
-                        else:
-                            for val in out.values:
-                                val = val / capacity
-                        if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "upwardLimit":
-                            if not any(gnb["entity_byname"][1] == uLCR["entity_byname"][1] for uLCR in uLCRs):
-                                target_db = pass_timeseries(target_db, 'storage_state_upper_limit', 'storage_state_upper_limit_forecasts', out, node_alt_ent_class_target, t_val__timestamp)
-                        if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "downwardLimit":
-                            target_db = pass_timeseries(target_db, 'storage_state_lower_limit', "storage_state_lower_limit_forecasts", out, node_alt_ent_class_target, t_val__timestamp)
-
+                                            capacity = val
+                capacity_found = True
         for uLCR in uLCRs:
             if node["entity_byname"][0] == uLCR["entity_byname"][1]:
-                for unit_capacity in unit_capacities:
-                    if unit_capacity["entity_byname"] == uLCR["entity_byname"]:
+                alt = uLCR["alternative_name"]
+                #two ways of representing unit capacities
+                for unit_size in unit_sizes:
+                    if unit_size["entity_byname"] == uLCR["entity_byname"]:
+                        unit_size_value = api.from_database(unit_size["value"],unit_size["type"])
                         ratio = api.from_database(uLCR["value"],uLCR["type"])
-                        constraint_byname = (uLCR["entity_byname"][1]+"_"+uLCR["entity_byname"][2]+"_investment",)
-                        unit_alt_ent_class_target = [uLCR["alternative_name"], (uLCR["entity_byname"][2],), "constraint"]
-                        #node params
-                        target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', node_alt_ent_class_target, "no_limits")
                         u_count = 1
                         for unit_count in unit_counts:
                             if unit_count["entity_byname"] == uLCR["entity_byname"]:
                                 u_count = api.from_database(unit_count["value"],unit_count["type"])
+                        capacity = capacity + ratio * unit_size_value * u_count  * eSPUOS
+                        capacity_found = True
+                for unit_capacity in unit_capacities:
+                    if unit_capacity["entity_byname"] == uLCR["entity_byname"]:
+                        unit_capacity_value = api.from_database(unit_capacity["value"],unit_capacity["type"])
+                        capacity = capacity + unit_capacity_value * eSPUOS
+                        capacity_found = True
+        
+        if capacity_found:
+            node_alt_ent_class_target = [alt, (node["entity_byname"][0],), "node"]
+            target_db = ines_transform.add_item_to_DB(target_db, 'storages_existing', node_alt_ent_class_target, 1)
+            target_db = ines_transform.add_item_to_DB(target_db, 'storage_capacity', node_alt_ent_class_target, capacity)
 
-                        #dummy investment params
-                        lifetime = settings["default_lifetime"]
-                        r = settings["default_interest_rate"]
-                        target_db = ines_transform.add_item_to_DB(target_db, 'lifetime', node_alt_ent_class_target, lifetime)
-                        target_db = ines_transform.add_item_to_DB(target_db, 'interest_rate', node_alt_ent_class_target, r)
-                        target_db = calculate_investment_cost(source_db, target_db, 0, node_alt_ent_class_target)
-                        
-                        #constraint
-                        const = 1 - (ratio * unit_capacity * u_count) / capacity
-                        unit_coeff = - ratio * unit_capacity / capacity
-                        node_alt_ent_class_target = [uLCR["alternative_name"], (uLCR["entity_byname"][1],), "node"]
-                        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', entity_byname=constraint_byname), warn=True)
-                        target_db = ines_transform.add_item_to_DB(target_db, 'sense', [uLCR["alternative_name"], constraint_byname, "constraint"], 'greater_than')
-                        target_db = ines_transform.add_item_to_DB(target_db, 'constant', [uLCR["alternative_name"], constraint_byname, "constraint"], const)
-                        target_db = ines_transform.add_item_to_DB(target_db, 'constraint_storage_count_coefficient', node_alt_ent_class_target, 1)
-                        target_db = ines_transform.add_item_to_DB(target_db, 'constraint_unit_count_coefficient', unit_alt_ent_class_target, unit_coeff)
+        # Add upper_limit timeseries                 
+        for gnb in gnbs:
+            multi = 1
+            for multiplier in multipliers:
+                if gnb["entity_byname"] == multiplier["entity_byname"]:
+                    multi = api.from_database(multiplier["value"], multiplier["type"])
+            if node["entity_byname"][0] == gnb["entity_byname"][1] and gnb["entity_byname"][2] == "upwardLimit":
+                if any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
+                    for timeseries in timeseriess:
+                        if gnb["entity_byname"] == timeseries["entity_byname"]:
+                            out = api.from_database(timeseries["value"], timeseries["type"])                    
+                            if isinstance(out.values[0], api.parameter_value.Map):
+                                for i, values_map in enumerate(out.values):
+                                    for j, val in enumerate(values_map.values):
+                                        out.values[i].values[j] = val * multi *eSPUOS / capacity
+                            else:
+                                for i, val in enumerate(out.values):
+                                    out.values[i] = val * multi *eSPUOS / capacity
+                            if not any(gnb["entity_byname"][1] == uLCR["entity_byname"][1] for uLCR in uLCRs):
+                                target_db = pass_timeseries(target_db, 'storage_state_upper_limit', 'storage_state_upper_limit_forecasts', out, node_alt_ent_class_target, t_val__timestamp)
+        
+        # add the downward limit next
+        for gnb in gnbs:
+            multi = 1
+            for multiplier in multipliers:
+                if gnb["entity_byname"] == multiplier["entity_byname"]:
+                    multi = api.from_database(multiplier["value"], multiplier["type"])
+            if node["entity_byname"][0] == gnb["entity_byname"][1] and (gnb["entity_byname"][2] == "downwardLimit" or gnb["entity_byname"][2] == "reference") :
+                if any(gnb["entity_byname"] == useConstant["entity_byname"] for useConstant in useConstants):
+                    for constant in constants:
+                        if gnb["entity_byname"] == constant["entity_byname"]:
+                            value = api.from_database(constant["value"], constant["type"])
+                            node_alt_ent_class_target = [constant["alternative_name"], (gnb["entity_byname"][1],), "node"]
+                            if gnb["entity_byname"][2] == "downwardLimit":
+                                target_db = ines_transform.add_item_to_DB(target_db, 'storage_state_lower_limit',  node_alt_ent_class_target, value * multi * eSPUOS/capacity)
+                elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
+                    for timeseries in timeseriess:
+                        if gnb["entity_byname"] == timeseries["entity_byname"]:
+                            out = api.from_database(timeseries["value"], timeseries["type"])
+                            node_alt_ent_class_target = [timeseries["alternative_name"], (gnb["entity_byname"][1],), "node"]
+                            if isinstance(out.values[0], api.parameter_value.Map):
+                                for i, values_map in enumerate(out.values):
+                                    for j, val in enumerate(values_map.values):
+                                        out.values[i].values[j] = val * multi *eSPUOS / capacity
+                            else:
+                                for i, val in enumerate(out.values):
+                                    out.values[i] = val * multi *eSPUOS / capacity
+                            if gnb["entity_byname"][2] == "downwardLimit":
+                                target_db = pass_timeseries(target_db, 'storage_state_lower_limit', "storage_state_lower_limit_forecasts", out, node_alt_ent_class_target, t_val__timestamp)
+                            if gnb["entity_byname"][2] == "reference":
+                                target_db = pass_timeseries(target_db, 'storage_state_fix', 'storage_state_fix_forecasts', out, node_alt_ent_class_target, t_val__timestamp)
+        for uLCR in uLCRs:
+            size_found = False
+            capacity_found = False
+            ratio = api.from_database(uLCR["value"],uLCR["type"])
+            if node["entity_byname"][0] == uLCR["entity_byname"][1]:
+                for unit_size in unit_sizes:
+                    if unit_size["entity_byname"] == uLCR["entity_byname"]:
+                        unit_size_value = api.from_database(unit_size["value"],unit_size["type"])
+                        size_found = True
+                u_count = 1
+                for unit_count in unit_counts:
+                    if unit_count["entity_byname"] == uLCR["entity_byname"]:
+                        u_count = api.from_database(unit_count["value"],unit_count["type"])
+                for unit_capacity in unit_capacities:
+                    if unit_capacity["entity_byname"] == uLCR["entity_byname"]:
+                        unit_capacity_value = api.from_database(unit_capacity["value"],unit_capacity["type"])
+                    capacity_found = True
+
+                constraint_byname = (uLCR["entity_byname"][1]+"_"+uLCR["entity_byname"][2]+"_investment",)
+                unit_alt_ent_class_target = [uLCR["alternative_name"], (uLCR["entity_byname"][2],), "unit"]
+                node_alt_ent_class_target = [uLCR["alternative_name"], (uLCR["entity_byname"][1],), "node"]
+                target_db = ines_transform.add_item_to_DB(target_db, 'storage_investment_method', node_alt_ent_class_target, "no_limits")
+                target_db = ines_transform.add_item_to_DB(target_db, "storage_investment_cost", node_alt_ent_class_target, 0)
+                
+                #constraint
+                if size_found:
+                    const = 1 - (ratio * unit_size_value * u_count) / capacity
+                    unit_coeff = - ratio * unit_size_value / capacity
+                elif capacity_found:
+                    const = 1 - (ratio * unit_capacity_value) / capacity
+                    unit_coeff = - ratio * unit_capacity_value / capacity
+                else:
+                    print("Warning: grid__node__unit__io with upperLimitCapacityRatio without a capacity defined")
+                    continue
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', entity_byname=constraint_byname), warn=True)
+                target_db = ines_transform.add_item_to_DB(target_db, 'sense', [uLCR["alternative_name"], constraint_byname, "constraint"], 'greater_than')
+                target_db = ines_transform.add_item_to_DB(target_db, 'constant', [uLCR["alternative_name"], constraint_byname, "constraint"], const)
+                target_db = ines_transform.add_item_to_DB(target_db, 'constraint_storage_count_coefficient', node_alt_ent_class_target, api.Map([constraint_byname[0]],[1]))
+                target_db = ines_transform.add_item_to_DB(target_db, 'constraint_unit_count_coefficient', unit_alt_ent_class_target, api.Map([constraint_byname[0]],[unit_coeff]))
 
     return target_db
 
@@ -1374,7 +1432,7 @@ def handle_boundaries(source_db, target_db, t_val__timestamp):
         if any(gnb["entity_byname"] == useConstant["entity_byname"] for useConstant in useConstants):
             for constant in constants:
                 if gnb["entity_byname"] == constant["entity_byname"]:
-                    out = api.from_database(constant["value"], constant["type"]) * multi *eSPUOS
+                    out = api.from_database(constant["value"], constant["type"]) * multi * eSPUOS
                     alt = constant["alternative_name"]
         elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
             for timeseries in timeseriess:
@@ -1382,17 +1440,15 @@ def handle_boundaries(source_db, target_db, t_val__timestamp):
                 if gnb["entity_byname"] == timeseries["entity_byname"]:
                     out = api.from_database(timeseries["value"], timeseries["type"])
                     if isinstance(out.values[0], api.parameter_value.Map):
-                        for values_map in out.values:
-                            for val in values_map.values:
-                                val = val * multi *eSPUOS
+                        for i, values_map in enumerate(out.values):
+                            for j, val in enumerate(values_map.values):
+                                out.values[i].values[j] = val * multi * eSPUOS
                     else:
-                        for val in out.values:
-                            val = val * multi *eSPUOS
+                        for i, val in enumerate(out.values):
+                            out.values[i] = val * multi * eSPUOS
                     alt = timeseries["alternative_name"]
 
-        if gnb["entity_byname"][2] == "reference":
-            target_db = pass_timeseries(target_db, 'storage_state_fix', 'storage_state_fix_forecasts', out, [alt, (gnb["entity_byname"][1],) ,"node"], t_val__timestamp)
-        elif gnb["entity_byname"][2] == "maxSpill":
+        if gnb["entity_byname"][2] == "maxSpill":
             target_db = pass_timeseries(target_db, 'spill_upper_limit', None, out, [alt, (gnb["entity_byname"][1],) ,"node"], t_val__timestamp)
         elif gnb["entity_byname"][2] == "minSpill":
             target_db = pass_timeseries(target_db, 'spill_lower_limit', None, out, [alt, (gnb["entity_byname"][1],) ,"node"], t_val__timestamp)
@@ -1547,6 +1603,7 @@ def create_simple_timeseries(source_db, target_db, t_val__timestamp):
     for influx in influxes:
         value = api.from_database(influx["value"], influx["type"])
         target_db = pass_timeseries(target_db, 'flow_profile', 'flow_profile_forecasts', value, [influx["alternative_name"], (influx["entity_byname"][1],), "node"], t_val__timestamp)
+        target_db = ines_transform.add_item_to_DB(target_db, "flow_scaling_method", [influx["alternative_name"], (influx["entity_byname"][1],), "node"], "use_profile_directly")
     
     for param in c_price:
         value =  api.from_database(param["value"], param["type"])
@@ -1662,12 +1719,14 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
                 print(f'processing stochastic timeseries:{target_name_stoch}')
                 inner_series = []
                 forecasts = []
+                timestamps = [stamp for stamp in t_val__timestamp.values()]
                 for i, val_map in enumerate(value.values):
+                    if value.indexes[i] not in settings["p_mfProbability"]:
+                        continue
                     t_vals = list(val_map.indexes)
-                    timestamps = [stamp for stamp in t_val__timestamp.values()]
                     out_vals = [val_map.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
                     timeseries = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
-                    if value.indexes[i] == 'f00':
+                    if value.indexes[i] == settings["mf_realization"]:
                         target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, timeseries, value_type="map")
                     else:
                         inner_series.append(timeseries)
@@ -1687,9 +1746,10 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
                     out_class = f'set__{alt_ent_class_target[2]}'
                 target_db.add_entity_item(entity_class_name=out_class, entity_byname=out_byname)
         else: #strip the f00 if it is the only one
-            t_vals = list(value.indexes)
             timestamps = [str(stamp) for stamp in t_val__timestamp.values()]
-            out_vals = [value.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+            for i, val_map in enumerate(value.values):
+                t_vals = list(val_map.indexes)
+                out_vals = [val_map.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
             time_series = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
             target_db = ines_transform.add_item_to_DB(target_db, target_name, alt_ent_class_target, time_series)
 
@@ -1781,11 +1841,6 @@ if __name__ == "__main__":
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
         with open(settings_path,'r') as file:
             settings = yaml.safe_load(file) 
-
-        stochastic = False
-        if len(range_to_array(settings["forecast_range"])) > 1:
-            stochastic = True
-
         cannot_convert = []
 
         main()
