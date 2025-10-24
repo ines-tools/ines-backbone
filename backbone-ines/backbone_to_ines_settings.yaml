@@ -1,4 +1,6 @@
-#set annuities are split into parts (investment cost, lifetime and interest rate)
+#### Mandatory data
+
+#set annuities are split into parts (investment cost, lifetime and interest rate). If lifetime or interest is not defined these are used 
 default_lifetime: 50
 default_interest_rate: 0.05
 
@@ -6,20 +8,14 @@ default_interest_rate: 0.05
 #for Northern european model this should be: '1982-01-01T00:00:00'
 first_timestamp: '1982-01-01T00:00:00'
 
+#Ranges of timesteps and invesment samples. Final timesteps are set using the t_start and t_end parameters
 timestep_range: ["t000000","t400000"]
 sample_range: ["s000","s001"]
-forecast_range: ["f00","f03"]
 
 #t_start, t_end and stepLengthInHours are mandatory
 t_start: 1
 t_end: 8760
-t_horizon:
-t_jump:
 stepLengthInHours: 1
-
-###Optional, for northern european model use. Will not take effect unless t_start or t_end are empty
-tsYear: 2014
-modelledDays: 7
 
 #sample params
 #at least one sample should be defined
@@ -27,19 +23,28 @@ sample_count: 1
 ms_start: {'s000': 1}
 ms_end: {'s000': 100}
 
-#by default uses msProbability to produce the sample weight, but if None, the two others are tried
+#by default uses msProbability to produce the sample weight, but if None, the two others are tried.
+# These should include at leas s000
 p_msProbability: {'s000': 1}
 p_msWeight: {'s000': 1}
 p_msAnnuityWeight: {'s000': 1}
 
-#forecast params
-mf_realization: 'f00' 
+#The realized forecast, almost always f00
+mf_realization: 'f00'
+#Forecast weights, these should include at least f00. Only forecasts with probability have their data transformed. 
 p_mfProbability: {'f00': 1}
-
-#for forecast interpolation
-t_improveForecastNew:
 
 #the data without a prior alternative will use this instead
 alternative: "Backbone"
 
+#### Optional data:
+#rolling parameters
+t_horizon:
+t_jump:
 
+#for forecast interpolation
+t_improveForecastNew:
+
+#For northern european model use only. Will not take effect unless t_start or t_end are empty
+tsYear: 2014
+modelledDays: 7
