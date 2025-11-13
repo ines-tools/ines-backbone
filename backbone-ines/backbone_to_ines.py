@@ -1282,6 +1282,8 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
             target_db = add_item_to_db(target_db, 'storages_existing', node_alt_ent_class_target, 1)
             target_db = add_item_to_db(target_db, 'storage_capacity', node_alt_ent_class_target, capacity)
 
+        upper_list = list()
+        lower_list = list() 
         # Add upper_limit timeseries                 
         for gnb in gnbs:
             multi = 1
@@ -1302,6 +1304,7 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                                     out.values[i] = val * multi *eSPUOS / capacity
                             if not any(gnb["entity_byname"][1] == uLCR["entity_byname"][1] for uLCR in uLCRs):
                                 target_db = pass_timeseries(target_db, 'storage_state_upper_limit', 'storage_state_upper_limit_forecasts', out, node_alt_ent_class_target, t_val__timestamp)
+                                upper_list.append(node_alt_ent_class_target)
         
         # add the downward limit next
         for gnb in gnbs:
@@ -1315,8 +1318,13 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                         if gnb["entity_byname"] == constant["entity_byname"]:
                             value = api.from_database(constant["value"], constant["type"])
                             node_alt_ent_class_target = [constant["alternative_name"], (gnb["entity_byname"][1],), "node"]
+                            val_out = round_float(value * multi * eSPUOS/capacity)
                             if gnb["entity_byname"][2] == "downwardLimit":
-                                target_db = add_item_to_db(target_db, 'storage_state_lower_limit',  node_alt_ent_class_target, value * multi * eSPUOS/capacity)
+                                if val_out > 0:
+                                    target_db = add_item_to_db(target_db, 'storage_state_lower_limit',  node_alt_ent_class_target, val_out)
+                                    lower_list.append(node_alt_ent_class_target)
+                            if gnb["entity_byname"][2] == "reference":
+                                target_db = add_item_to_db(target_db, 'storage_state_fix',  node_alt_ent_class_target, val_out)
                 elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
                     for timeseries in timeseriess:
                         if gnb["entity_byname"] == timeseries["entity_byname"]:
@@ -1331,8 +1339,19 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                                     out.values[i] = val * multi *eSPUOS / capacity
                             if gnb["entity_byname"][2] == "downwardLimit":
                                 target_db = pass_timeseries(target_db, 'storage_state_lower_limit', "storage_state_lower_limit_forecasts", out, node_alt_ent_class_target, t_val__timestamp)
+                                lower_list.append(node_alt_ent_class_target)
                             if gnb["entity_byname"][2] == "reference":
                                 target_db = pass_timeseries(target_db, 'storage_state_fix', 'storage_state_fix_forecasts', out, node_alt_ent_class_target, t_val__timestamp)
+
+        for upper in upper_list:
+            if any(upper == lower for lower in lower_list):
+                target_db = add_item_to_db(target_db, 'storage_limit_method',  node_alt_ent_class_target, "upper_and_lower_limit")
+            else:
+                target_db = add_item_to_db(target_db, 'storage_limit_method',  node_alt_ent_class_target, "upper_limit")
+        for lower in lower_list:
+            if not any(lower == upper for upper in upper_list):
+                target_db = add_item_to_db(target_db, 'storage_limit_method',  node_alt_ent_class_target, "lower_limit")
+
         for uLCR in uLCRs:
             size_found = False
             capacity_found = False
