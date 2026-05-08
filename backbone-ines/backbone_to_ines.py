@@ -242,9 +242,9 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                             #offlineReserveCapability
                         }
                     ,'grid__node__unit__io':{
-                        'unit':{
-                            'shutdownCost': ['shutdown_cost',1.0,[[3]]]
-                        }
+                        #'unit':{
+                            #'shutdownCost': ['shutdown_cost',1.0,[[3]]]
+                        #}
                     }    
                 }
             if convertname == 'backbone_to_ines_parameter_methods':
@@ -657,6 +657,7 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
     startColdAfterXhourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startColdAfterXhours')
     startWarmAfterXHourss = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'startWarmAfterXHours')
     effLevel__effSelector__unit =  source_db.get_entity_items(entity_class_name='effLevel__effSelector__unit')
+    shutdowncosts = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='shutdownCost')
 
     for unit in units:
         #first check if tiered unit
@@ -736,7 +737,13 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
                 alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
                 target_db = add_item_to_db(target_db, 'efficiency', alt_ent_class_target, outval)
                 target_db = add_item_to_db(target_db, 'conversion_method', alt_ent_class_target, conversion_method)
-
+        shutdown_cost = None
+        for param in shutdowncosts:
+            if unit["entity_byname"] == param["entity_byname"]:
+                if not shutdown_cost or api.from_database(param["value"], param["type"]) > shutdown_cost:
+                    shutdown_cost = api.from_database(param["value"], param["type"])
+        if shutdown_cost:
+            target_db = add_item_to_db(target_db, 'shutdown_cost', [param["alternative_name"], param["entity_byname"], "unit"], shutdown_cost, value_type=True)
 
     #eff00, f, t, val 
     #only eff00 used, constant for each time step
@@ -783,7 +790,17 @@ def process_links(source_db, target_db, t_val__timestamp):
     investMIP = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='investMIP')
     variableTransCost = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name='variableTransCost')
 
-    for link in source_db.get_entity_items(entity_class_name='grid__node__node'):
+    #filter the double links (A-B and B-A) to only have one of them, as INES does not support parallel links and we want to keep all parameters for one of the links
+    links = source_db.get_entity_items(entity_class_name='grid__node__node')
+    link_filtered = []
+    node_pairs_in_links = []
+    for link in links:
+        nodes = [link["entity_byname"][1], link["entity_byname"][2]]
+        if [nodes[1],nodes[0]] not in node_pairs_in_links:
+            link_filtered.append(link)
+            node_pairs_in_links.append(nodes)
+
+    for link in link_filtered:
         target_entity_byname = ('link_'+link["entity_byname"][1]+"_"+link["entity_byname"][2],)
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='link', entity_byname=target_entity_byname), warn=True)
         rel_target_entity_byname = (link["entity_byname"][1], target_entity_byname[0], link["entity_byname"][2])
@@ -824,60 +841,63 @@ def process_links(source_db, target_db, t_val__timestamp):
                     links_max_count = 1
                     target_db = add_item_to_db(target_db, 'links_max_cumulative', alt_ent_class_target, links_max_count)
 
-    for param in variableTransCost:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value = api.from_database(param["value"], param["type"])
-        target_db = pass_timeseries(target_db,'operational_cost', 'operational_cost_forecasts', value, 
-                                    [param["alternative_name"], target_entity_byname, "link"], t_val__timestamp)
+        for param in variableTransCost:
+            if param["entity_byname"] == link["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                target_db = pass_timeseries(target_db,'operational_cost', 'operational_cost_forecasts', value, 
+                                            [param["alternative_name"], target_entity_byname, "link"], t_val__timestamp)
 
-    for param in transfer_loss:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value = api.from_database(param["value"], param["type"])
-        if isinstance(value,float):
-            value = 1 - value
-        if isinstance(value, map):
-            value.values = [1 - val for val in value.values] 
-        alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-        target_db = pass_timeseries(target_db, 'efficiency', 'efficiency_forecasts', value, alt_ent_class_target, t_val__timestamp)
+        for param in transfer_loss:
+            if param["entity_byname"] == link["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                if isinstance(value,float):
+                    value = 1 - value
+                if isinstance(value, map):
+                    value.values = [1 - val for val in value.values] 
+                alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                target_db = pass_timeseries(target_db, 'efficiency', 'efficiency_forecasts', value, alt_ent_class_target, t_val__timestamp)
 
-    for param in ICrampDown:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value = api.from_database(param["value"], param["type"])
-        alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-        target_db = add_item_to_db(target_db, 'ramp_limit_down', alt_ent_class_target, 60 * value)
+        for param in ICrampDown:
+            if param["entity_byname"] == link["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                target_db = add_item_to_db(target_db, 'ramp_limit_down', alt_ent_class_target, 60 * value)
 
-    for param in ICrampUp:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value = api.from_database(param["value"], param["type"])
-        alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-        target_db = add_item_to_db(target_db, 'ramp_limit_up', alt_ent_class_target, 60 * value)
+        for param in ICrampUp:
+            if param["entity_byname"] == link["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                target_db = add_item_to_db(target_db, 'ramp_limit_up', alt_ent_class_target, 60 * value)
 
-    for param in investMIP:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value = api.from_database(param["value"], param["type"])
-        if value != 0.0:
-            alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-            target_db = add_item_to_db(target_db, 'investment_uses_integer', alt_ent_class_target, True)
-    for param in availabilities:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value =  api.from_database(param["value"], param["type"])
-        alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-        target_db = pass_timeseries(target_db, 'availability', 'availability_forecasts', value, alt_ent_class_target, t_val__timestamp)
+        for param in investMIP:
+            if param["entity_byname"] == link["entity_byname"]:
+                value = api.from_database(param["value"], param["type"])
+                if value != 0.0:
+                    alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                    target_db = add_item_to_db(target_db, 'investment_uses_integer', alt_ent_class_target, True)
+        for param in availabilities:
+            if param["entity_byname"] == link["entity_byname"]:
+                target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
+                value =  api.from_database(param["value"], param["type"])
+                alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                target_db = pass_timeseries(target_db, 'availability', 'availability_forecasts', value, alt_ent_class_target, t_val__timestamp)
 
-    for param in annuity:
-        target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
-        value =  api.from_database(param["value"], param["type"])
-        alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
-        lifetime = settings["default_lifetime"]
-        r = settings["default_interest_rate"]
-        target_db = add_item_to_db(target_db, 'lifetime', alt_ent_class_target, lifetime)
-        target_db = add_item_to_db(target_db, 'interest_rate', alt_ent_class_target, r)
-        target_db = calculate_investment_cost(source_db, target_db, value, alt_ent_class_target)
+        for param in annuity:
+            if param["entity_byname"] == link["entity_byname"]:
+                target_entity_byname = ('link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2],)
+                value =  api.from_database(param["value"], param["type"])
+                alt_ent_class_target = [param["alternative_name"], target_entity_byname, "link"]
+                lifetime = settings["default_lifetime"]
+                r = settings["default_interest_rate"]
+                target_db = add_item_to_db(target_db, 'lifetime', alt_ent_class_target, lifetime)
+                target_db = add_item_to_db(target_db, 'interest_rate', alt_ent_class_target, r)
+                target_db = calculate_investment_cost(source_db, target_db, value, alt_ent_class_target)
     
-    for entity in grid__node__node__groups:
-        target_entity_byname = (entity["entity_byname"][3],'link_'+entity["entity_byname"][1]+"_"+entity["entity_byname"][2])
-        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link', 
-                                            entity_byname=target_entity_byname), warn=True)
+        for entity in grid__node__node__groups:
+            if link["entity_byname"][1] == entity["entity_byname"][1] and link["entity_byname"][2] == entity["entity_byname"][2]:
+                target_entity_byname = (entity["entity_byname"][3],'link_'+entity["entity_byname"][1]+"_"+entity["entity_byname"][2])
+                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__link', 
+                                                    entity_byname=target_entity_byname), warn=True)
 
     return target_db
 
@@ -986,7 +1006,7 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     group__restype__uds = source_db.get_entity_items(entity_class_name='group__restype__up_down')
     group__nodes = source_db.get_entity_items(entity_class_name='group__node')
     gnurs = source_db.get_entity_items(entity_class_name='grid__node__unit__restype')
-    gnnrs = source_db.get_entity_items(entity_class_name='grid__node__node__restype')
+    gnnrs_orig = source_db.get_entity_items(entity_class_name='grid__node__node__restype')
     reserve_activation_durations = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'reserve_activation_duration') 
     reserve_lengths = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'reserve_length')
     gate_closures = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'gate_closure')
@@ -994,7 +1014,7 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     update_frequencies = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'update_frequency')
     reserveDemands = source_db.get_parameter_value_items(entity_class_name='group__restype__up_down', parameter_definition_name = 'reserveDemand')
     LossOfTrans = source_db.get_parameter_value_items(entity_class_name='group__restype__up_down', parameter_definition_name = 'LossOfTrans')
-    portion_of_transfer_to_reserve = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name = 'portion_of_transfer_to_reserve')
+    portion_of_transfer_to_reserve_orig = source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name = 'portion_of_transfer_to_reserve')
     portion_of_infeed_to_reserve = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'portion_of_infeed_to_reserve') 
     unit_fail = source_db.get_parameter_value_items(entity_class_name='unit', parameter_definition_name = 'unit_fail')
     reserveReliability = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__restype', parameter_definition_name = 'reserveReliability') 
@@ -1007,6 +1027,22 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     #update_offset
     #offlineReserveCapability
     #portion_of_infeed_to_reserve   the coefficient is not applied, only the contingecy is made
+
+
+    #filter double links
+    grid__node__nodes_orig = source_db.get_entity_items(entity_class_name='grid__node__node')
+    grid__node__nodes = []
+    node_pairs_in_links = []
+    grid__node__nodes_orig = source_db.get_entity_items(entity_class_name='grid__node__node')
+    for link in grid__node__nodes_orig:
+        nodes = [link["entity_byname"][1], link["entity_byname"][2]]
+        if [nodes[1],nodes[0]] not in node_pairs_in_links:
+            grid__node__nodes.append(link)
+            node_pairs_in_links.append(nodes)
+    gnnrs = [gnnr for gnnr in gnnrs_orig if any(gnnr["entity_byname"][1] == link["entity_byname"][1] and gnnr["entity_byname"][2] == link["entity_byname"][2] for link in grid__node__nodes)]
+    portion_of_transfer_to_reserve = [pottr for pottr in portion_of_transfer_to_reserve_orig if any(pottr["entity_byname"][1] == link["entity_byname"][1] and pottr["entity_byname"][2] == link["entity_byname"][2] for link in grid__node__nodes)]
+    gnnr_ups = [gnnr_up for gnnr_up in gnnr_ups if any(gnnr_up["entity_byname"][1] == link["entity_byname"][1] and gnnr_up["entity_byname"][2] == link["entity_byname"][2] for link in grid__node__nodes)]
+    gnnr_downs = [gnnr_down for gnnr_down in gnnr_downs if any(gnnr_down["entity_byname"][1] == link["entity_byname"][1] and gnnr_down["entity_byname"][2] == link["entity_byname"][2] for link in grid__node__nodes)]
 
     #create entities first:
     for entity in group__restypes:
@@ -1239,11 +1275,13 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                         if gnb["entity_byname"] == constant["entity_byname"]:
                             capacity = api.from_database(constant["value"], constant["type"]) * multi*eSPUOS
                             alt = constant["alternative_name"]
+                            capacity_found = True
                 elif any(gnb["entity_byname"] == useTimeseries["entity_byname"] for useTimeseries in useTimeseriess):
                     for timeseries in timeseriess:
                         if gnb["entity_byname"] == timeseries["entity_byname"]:
                             out = api.from_database(timeseries["value"], timeseries["type"])
                             alt = timeseries["alternative_name"]
+                            capacity_found = True
                             #search for the max value in the timeseries, two or one dimensional
                             if isinstance(out.values[0], api.parameter_value.Map):
                                 for values_map in out.values:
@@ -1256,7 +1294,7 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                                     val = val * multi *eSPUOS
                                     if val > capacity:
                                             capacity = val
-                capacity_found = True
+
         for uLCR in uLCRs:
             if node["entity_byname"][0] == uLCR["entity_byname"][1]:
                 alt = uLCR["alternative_name"]
@@ -1271,6 +1309,7 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                                 u_count = api.from_database(unit_count["value"],unit_count["type"])
                         capacity = capacity + ratio * unit_size_value * u_count  * eSPUOS
                         capacity_found = True
+                        alt = unit_size["alternative_name"]
                 for unit_capacity in unit_capacities:
                     if unit_capacity["entity_byname"] == uLCR["entity_byname"]:
                         unit_capacity_value = api.from_database(unit_capacity["value"],unit_capacity["type"])
@@ -1396,13 +1435,26 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
 
 def create_bound_state_constraints(source_db, target_db, t_val__timestamp):
     #not tested
+    
+    #filter grid__node__nodes to only have one direction, the other direction is not needed for the sets and would cause problems with the unique byname requirement of entities
+    grid__node__nodes = []
+    node_pairs_in_links = []
+    grid__node__nodes_orig = source_db.get_entity_items(entity_class_name='grid__node__node')
+    for link in grid__node__nodes_orig:
+        nodes = [link["entity_byname"][1], link["entity_byname"][2]]
+        if [nodes[1],nodes[0]] not in node_pairs_in_links:
+            grid__node__nodes.append(link)
+            node_pairs_in_links.append(nodes)
+
     for param in source_db.get_parameter_value_items(entity_class_name='grid__node__node', parameter_definition_name = 'boundStateMaxDiff'):
+        if not any(param["entity_byname"][1] == gnn["entity_byname"][1] and param["entity_byname"][2] == gnn["entity_byname"][2] for gnn in grid__node__nodes):
+            continue
         value = api.from_database(param["value"], param["type"])
         constraint_map = {
             "less_than": ['state_leq',param["entity_byname"][1], param["entity_byname"][2]],
             "greater_than": ['state_geq', param["entity_byname"][2], param["entity_byname"][1]]
         }
-        for name, value in constraint_map:
+        for name, value in constraint_map.items():
             target_byname = ("_".join(value[0],value[1],value[2]),)
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', 
                                                                     entity_byname=target_byname), warn=True)
@@ -1633,8 +1685,17 @@ def create_simple_timeseries(source_db, target_db, t_val__timestamp):
 def create_sets_from_grids(source_db, target_db):
     grids = source_db.get_entity_items(entity_class_name='grid')
     grid__nodes = source_db.get_entity_items(entity_class_name='grid__node')
-    grid__node__nodes = source_db.get_entity_items(entity_class_name='grid__node__node')
+    grid__node__nodes_orig = source_db.get_entity_items(entity_class_name='grid__node__node')
     grid__node__unit__ios = source_db.get_entity_items(entity_class_name='grid__node__unit__io')
+
+    #filter grid__node__nodes to only have one direction, the other direction is not needed for the sets and would cause problems with the unique byname requirement of entities
+    grid__node__nodes = []
+    node_pairs_in_links = []
+    for link in grid__node__nodes_orig:
+        nodes = [link["entity_byname"][1], link["entity_byname"][2]]
+        if [nodes[1],nodes[0]] not in node_pairs_in_links:
+            grid__node__nodes.append(link)
+            node_pairs_in_links.append(nodes)
 
     for grid in grids:
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set',entity_byname=("grid_"+grid["name"],)), warn=True)
@@ -1746,9 +1807,10 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
                     else:
                         inner_series.append(timeseries)
                         forecasts.append(value.indexes[i])
-                value.values = inner_series
-                value.indexes = forecasts
-                target_db = add_item_to_db(target_db, target_name_stoch, alt_ent_class_target, value)
+                if inner_series:
+                    value.values = inner_series
+                    value.indexes = forecasts
+                    target_db = add_item_to_db(target_db, target_name_stoch, alt_ent_class_target, value)
 
                 #add entity to the stochastic set
                 if not stochastic_group:
