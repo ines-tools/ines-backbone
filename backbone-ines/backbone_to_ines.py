@@ -1189,7 +1189,7 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
     unit_constraints = source_db.get_entity_items(entity_class_name='unit__constraint')
     coefficients = source_db.get_parameter_value_items(entity_class_name='unit__constraint__node', parameter_definition_name = 'coefficient')
     units = list()
-
+    constraints_out = list()
     for unit_constraint in unit_constraints:
         if unit_constraint["entity_byname"][0] not in units:
             units.append(unit_constraint["entity_byname"][0])
@@ -1197,6 +1197,7 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
         uc = unit_constraint["entity_byname"]
         ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', 
                                                                     entity_byname=(f"{uc[0]}_{uc[1]}",)), warn=True)
+        constraints_out.append(f"{uc[0]}_{uc[1]}")
         constant_value = 0
         for constant in constants:
             if constant["entity_byname"] == uc:
@@ -1211,7 +1212,6 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
             sense = "less_than"
         target_db = add_item_to_db(target_db, "sense", [settings['alternative'],(f"{uc[0]}_{uc[1]}",),'constraint'], sense) 
 
-    
     for unit in units:            
         for gnuio in gnuios:
             if gnuio["entity_byname"][2] == unit:
@@ -1219,8 +1219,14 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
                 value_values = list()
                 for coefficient in coefficients:
                     if gnuio["entity_byname"][1] == coefficient["entity_byname"][2] and gnuio["entity_byname"][2] == coefficient["entity_byname"][0]:
+                        if f"{coefficient['entity_byname'][0]}_{coefficient['entity_byname'][1]}" not in constraints_out:
+                            try:
+                                ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', 
+                                                                        entity_byname=(f"{coefficient['entity_byname'][0]}_{coefficient['entity_byname'][1]}",)), warn=True)
+                            except Exception as e:
+                                print(f"Error adding constraint {coefficient['entity_byname'][0]}_{coefficient['entity_byname'][1]}: {e}")
                         coefficient_value = api.from_database(coefficient["value"], coefficient["type"])
-                        value_indexes.append(f"{coefficient["entity_byname"][0]}_{coefficient["entity_byname"][1]}")
+                        value_indexes.append(f"{coefficient['entity_byname'][0]}_{coefficient['entity_byname'][1]}")
                         value_values.append(coefficient_value)
                         alt = coefficient['alternative_name']
                 if len(value_indexes) > 0: 
