@@ -930,6 +930,7 @@ def create_emissions(source_db, target_db, t_val__timestamp):
 
     emissionCaps =  source_db.get_parameter_value_items(entity_class_name='group__emission', parameter_definition_name = 'emissionCap')
     emissionTaxs =  source_db.get_parameter_value_items(entity_class_name='group__emission', parameter_definition_name = 'emissionTax')
+    emissionPrice = source_db.get_parameter_value_items(entity_class_name='group__emission', parameter_definition_name = 'emissionPrice')
     emissionPriceChanges = source_db.get_parameter_value_items(entity_class_name='group__emission', parameter_definition_name = 'emissionPriceChange')
     emission_contents = source_db.get_parameter_value_items(entity_class_name='node__emission', parameter_definition_name = 'emission_content')
     fomEmissions = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__emission', parameter_definition_name = 'emissionCap')
@@ -947,7 +948,7 @@ def create_emissions(source_db, target_db, t_val__timestamp):
 
     for emissionCap in emissionCaps:
         value = api.from_database(emissionCap["value"], emissionCap["type"])
-        alt_ent_class_target = [emissionCap["alternative_name"],(emissionCap["entity_byname"][0],), "group"]
+        alt_ent_class_target = [emissionCap["alternative_name"],(emissionCap["entity_byname"][0],), "set"]
         if emissionCap["entity_byname"][1] == "CO2" or emissionCap["entity_byname"][1] == "co2":
             target_db = add_item_to_db(target_db, "co2_max_cumulative", alt_ent_class_target, value)
         if emissionCap["entity_byname"][1] == "SO2" or emissionCap["entity_byname"][1] == "so2":
@@ -956,7 +957,7 @@ def create_emissions(source_db, target_db, t_val__timestamp):
             target_db = add_item_to_db(target_db, "nox_max_cumulative", alt_ent_class_target, value)
     for emissionTax in emissionTaxs:
         value = api.from_database(emissionTax["value"], emissionTax["type"])
-        alt_ent_class_target = [emissionTax["alternative_name"],(emissionTax["entity_byname"][0],), "group"]
+        alt_ent_class_target = [emissionTax["alternative_name"],(emissionTax["entity_byname"][0],), "set"]
         if emissionTax["entity_byname"][1] == "CO2" or emissionTax["entity_byname"][1] == "co2":
             target_db = add_item_to_db(target_db, "co2_price", alt_ent_class_target, value)
         if emissionTax["entity_byname"][1] == "SO2" or emissionTax["entity_byname"][1] == "so2":
@@ -967,15 +968,17 @@ def create_emissions(source_db, target_db, t_val__timestamp):
     for fomEmission in fomEmissions:
         value = api.from_database(fomEmission["value"], fomEmission["type"])
         alt_ent_class_target = [fomEmission["alternative_name"],(fomEmission["entity_byname"][0],), "unit"]
-        if emissionTax["entity_byname"][1] == "CO2" or emissionTax["entity_byname"][1] == "co2":
+        if fomEmission["entity_byname"][1] == "CO2" or fomEmission["entity_byname"][1] == "co2":
             target_db = add_item_to_db(target_db, "fixed_co2_emissions", alt_ent_class_target, value)
     
     for invEmission in invEmissions:
         value = api.from_database(invEmission["value"], invEmission["type"])
         alt_ent_class_target = [invEmission["alternative_name"],(invEmission["entity_byname"][0],), "unit"]
-        if emissionTax["entity_byname"][1] == "CO2" or emissionTax["entity_byname"][1] == "co2":
+        if invEmission["entity_byname"][1] == "CO2" or invEmission["entity_byname"][1] == "co2":
             target_db = add_item_to_db(target_db, "investment_co2_emissions", alt_ent_class_target, value)
-    for param in emissionPriceChanges:
+    
+    for param in emissionPriceChanges + emissionPrice:
+        print("Emissin node" ,param["entity_byname"][0])
         value = api.from_database(param["value"], param["type"])
         alt_ent_class_target = [param["alternative_name"], (param["entity_byname"][0],),'set']
         target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'co2_price', 'co2_price_forecasts')
