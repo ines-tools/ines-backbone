@@ -616,7 +616,7 @@ def create_price_change(source_db, target_db, t_val__timestamp):
     for param in source_db.get_parameter_value_items(entity_class_name='node', parameter_definition_name = 'priceChange'):
         value = api.from_database(param["value"], param["type"])
         alt_ent_class_target = [param["alternative_name"], param["entity_byname"],'node']
-        target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'commodity_price', 'commodity_price_forecasts')
+        target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'commodity_price', 'commodity_price_forecasts', cumulative=True)
      
     return target_db
 
@@ -977,12 +977,17 @@ def create_emissions(source_db, target_db, t_val__timestamp):
         if invEmission["entity_byname"][1] == "CO2" or invEmission["entity_byname"][1] == "co2":
             target_db = add_item_to_db(target_db, "investment_co2_emissions", alt_ent_class_target, value)
     
-    for param in emissionPriceChanges + emissionPrice:
-        print("Emissin node" ,param["entity_byname"][0])
+    for param in emissionPriceChanges:
+        print("Emission node" ,param["entity_byname"][0])
         value = api.from_database(param["value"], param["type"])
         alt_ent_class_target = [param["alternative_name"], (param["entity_byname"][0],),'set']
-        target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'co2_price', 'co2_price_forecasts')
-
+        target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'co2_price', 'co2_price_forecasts', cumulative = True)
+    
+    for param in emissionPrice:
+        print("Emission node" ,param["entity_byname"][0])
+        value = api.from_database(param["value"], param["type"])
+        alt_ent_class_target = [param["alternative_name"], (param["entity_byname"][0],),'set']
+        target_db = single_price_change(target_db, t_val__timestamp, value, alt_ent_class_target, 'co2_price', 'co2_price_forecasts', cumulative = False)
 
     for vomEmission in vomEmissions:
         value = api.from_database(vomEmission["value"], vomEmission["type"])
@@ -1841,7 +1846,7 @@ def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_cl
 
     return target_db
 
-def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class_target, target_param, target_name_stoch, stochastic_group = None):
+def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class_target, target_param, target_name_stoch, stochastic_group = None, cumulative = False):
     #stoch
     if isinstance(source_value.values[0], api.parameter_value.Map):
         if len(source_value.indexes) > 1:
@@ -1852,10 +1857,21 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
                     values = list()
                     price = 0
                     priceChange_dict = values_map.to_dict()
+                    #get prices before the first timestamp to be able to do cumulative price changes if needed
+                    for step__price in priceChange_dict["data"]:
+                        if step__price[0] in t_val__timestamp.keys():
+                            break
+                        if cumulative:
+                            price += float(step__price[1])
+                        else:
+                            price = float(step__price[1])
                     for i in t_val__timestamp.keys():
                         for step__price in priceChange_dict["data"]:
                             if i == step__price[0]:
-                                price = step__price[1]
+                                if cumulative:
+                                    price += float(step__price[1])
+                                else:
+                                    price = float(step__price[1])
                                 break
                         values.append(price)
                     if forecast == 'f00':
@@ -1881,10 +1897,21 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
                 values = list()
                 price = 0
                 priceChange_dict = values_map.to_dict()
+                #get prices before the first timestamp to be able to do cumulative price changes if needed
+                for step__price in priceChange_dict["data"]:
+                    if step__price[0] in t_val__timestamp.keys():
+                        break
+                    if cumulative:
+                        price += float(step__price[1])
+                    else:
+                        price = float(step__price[1])
                 for i in t_val__timestamp.keys():
                     for step__price in priceChange_dict["data"]:
                         if i == step__price[0]:
-                            price = step__price[1]
+                            if cumulative:
+                                price += float(step__price[1])
+                            else:
+                                price = float(step__price[1])
                             break
                     values.append(price)
             timestamps = []
@@ -1901,10 +1928,21 @@ def single_price_change(target_db, t_val__timestamp, source_value, alt_ent_class
         values = list()
         price = 0
         priceChange_dict = source_value.to_dict()
+        #get prices before the first timestamp to be able to do cumulative price changes if needed
+        for step__price in priceChange_dict["data"]:
+            if step__price[0] in t_val__timestamp.keys():
+                break
+            if cumulative:
+                price += float(step__price[1])
+            else:
+                price = float(step__price[1])
         for i in t_val__timestamp.keys():
             for step__price in priceChange_dict["data"]:
                 if i == step__price[0]:
-                    price = step__price[1]
+                    if cumulative:
+                        price += float(step__price[1])
+                    else:
+                        price = float(step__price[1])
             values.append(price)
         time_series = api.TimeSeriesVariableResolution(t_val__timestamp.values(), values, ignore_year = False, repeat=False, index_name="time step")
         target_db = add_item_to_db(target_db, target_param, alt_ent_class_target, time_series)
