@@ -55,8 +55,9 @@ def main():
             target_db = ines_transform.process_methods(source_db, target_db, parameter_methods)
             print("unit parameters")
             target_db = create_unit_parameters(source_db, target_db, t_val__timestamp)
-            print("add capacities")
-            target_db = process_capacities(source_db, target_db, t_val__timestamp)
+            #moved inside create_unit_relationship
+            #print("add capacities")
+            #target_db = process_capacities(source_db, target_db, t_val__timestamp)
             target_db = create_node_capacities(source_db, target_db, t_val__timestamp)
             print("create timeseries from price change")
             target_db = create_price_change(source_db, target_db, t_val__timestamp)
@@ -200,7 +201,7 @@ def conversion_configuration(conversions = ['backbone_to_ines_entities', 'backbo
                             #'initialOnlineStatus': #hot start not in ines
                             'maxUnitCount': 'units_max_cumulative',
                             'minOperationHours': ['min_uptime', 60],
-                            'minShutdownHours': ['min_downtime', 60],
+                            'minShutDownHours': ['min_downtime', 60],
                             'minUnitCount': 'units_min_cumulative',
                             #'rampSpeedFromMinLoad': not in ines
                             #'rampSpeedToMinLoad' not in ines
@@ -437,6 +438,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
     startFuelConsCold = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='startFuelConsCold')
     startFuelConsHot = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='startFuelConsHot') 
     startFuelConsWarm = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='startFuelConsWarm') 
+    shutdownCosts = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='shutdownCosts')
 
     for source_entity in gnuios:
         print(source_entity["name"])
@@ -476,8 +478,16 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
             ines_transform.assert_success(target_db.add_entity_item(entity_class_name='set__unit_flow', 
                                                 entity_byname=group_entity_byname), warn=True)
 
+    target_db, capacities_dict, unit_counts_dict = process_capacities(source_db, target_db, t_val__timestamp)
+
     #calculate start-up costs and emissions
     for unit in units:
+        for shutdownCost in shutdownCosts:
+            if source_entity["entity_byname"] == shutdownCost["entity_byname"]:
+                value = api.from_database(shutdownCost["value"], shutdownCost["type"]) * capacities_dict[source_entity["name"]]
+                alt = shutdownCost["alternative_name"]
+                target_db = add_item_to_db(target_db, 'shutdown_cost', [alt, unit["entity_byname"] ,"unit"], value, value_type=True)
+
         emission_for_fuel = dict() 
         price_for_fuel = dict()
         #get inputfuels
@@ -499,10 +509,9 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                         #would need a change in ines-spec
                         value = api.from_database(priceChange["value"], priceChange["type"])
                         price_for_fuel[priceChange["entity_byname"][0]] = float(value.values[0]) * fixed_fuel_fraction
-        
+
         emission_for_fuels = sum(emission_for_fuel.values()) 
         price_for_fuels = sum(price_for_fuel.values())
-
         emissions = dict()
         prices = dict()
         for source_entity in gnuios:
@@ -544,14 +553,14 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
                         else:
                             emissions[key] = emissions[key] + value * emission_for_fuels
                         if key not in prices.keys():
-                            prices[key] = value * price_for_fuels
+                            prices[key] = value * price_for_fuels * capacities_dict[source_entity["name"]]
                         else:
-                            prices[key] = prices[key] + value * price_for_fuels
+                            prices[key] = prices[key] + value * price_for_fuels * capacities_dict[source_entity["name"]]
                     for key, value in start_up_tiers.items():
                         if key not in prices.keys():
-                            prices[key] = value
+                            prices[key] = value * capacities_dict[source_entity["name"]]
                         else:
-                            prices[key] = prices[key] + value
+                            prices[key] = prices[key] + value * capacities_dict[source_entity["name"]]
         if len(list(prices.keys())) > 1:
             out = api.Map([str(x) for x in prices.keys()],list(prices.values()))
             target_db = add_item_to_db(target_db, 'startup_cost_tiers', [alt, unit["entity_byname"] ,"unit"], out, value_type=True)
@@ -581,7 +590,9 @@ def process_capacities(source_db, target_db, t_val__timestamp):
                 if not any(source_entity["name"] == unit_count["entity_name"] for unit_count in unit_counts):
                     target_db = add_item_to_db(target_db, 'units_existing', alt_ent_class_unit, 1, value_type=True)
                     added = True
-    
+
+    capacities_dict = dict()
+    unit_counts_dict = dict()
     for source_entity in source_db.get_entity_items(entity_class_name='grid__node__unit__io'):
         if source_entity["entity_byname"][3] == "input":
             target_class_name= "node__to_unit"
@@ -602,15 +613,21 @@ def process_capacities(source_db, target_db, t_val__timestamp):
                 unit_capacity =  capacity_value/unit_count_value
                 alt_ent_class_target = [capacity["alternative_name"], target_entity_byname, target_class_name]
                 target_db = add_item_to_db(target_db, 'capacity', alt_ent_class_target, unit_capacity, value_type=True)
+                capacities_dict[source_entity["name"]] = unit_capacity
+                unit_counts_dict[source_entity["name"]] = unit_count_value
+                break
         #if capacity not given, check if unit size is given and use that
         if not unit_capacity:
             for unit_size in unit_sizes:
                 if source_entity["name"] == unit_size["entity_name"]:
                     unit_size_value = api.from_database(unit_size["value"], unit_size["type"])
                     alt_ent_class_target = [unit_size["alternative_name"], alt_ent_class_target[1], alt_ent_class_target[2]]
-                    target_db.add_item_to_db(target_db, 'capacity', alt_ent_class_target, unit_size_value, value_type=True)
+                    target_db = add_item_to_db(target_db, 'capacity', alt_ent_class_target, unit_size_value, value_type=True)
+                    capacities_dict[source_entity["name"]] = unit_size_value
+                    break
 
-    return target_db
+
+    return target_db, capacities_dict, unit_counts_dict
 
 def create_price_change(source_db, target_db, t_val__timestamp):
     for param in source_db.get_parameter_value_items(entity_class_name='node', parameter_definition_name = 'priceChange'):
@@ -679,9 +696,30 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
         #Check startup method
         # Here we are using only the effLevel level1 and ignoring the levels used with longer step sizes
         # when rampToMinLoad and rampFromMinLoad are added, these units would use the "trajectory" method
+        method = "linear"
+        found = False
         for entity in effLevel__effSelector__unit:
             if unit["entity_byname"][0] == entity["entity_byname"][2]:
                 if entity["entity_byname"][0] == "level1":
+                    if entity["entity_byname"][1] == "directOff":
+                        method = "no_startup"
+                    elif entity["entity_byname"][1] == "directOnLP":
+                        if tiered:
+                            method = "linear_with_tiers"
+                        else:
+                            method = "linear"
+                    elif entity["entity_byname"][1] == "directOnMIP":
+                        if tiered:
+                            method = "integer_with_tiers"
+                        else:
+                            method = "integer"
+                    target_db = add_item_to_db(target_db, 'startup_method', [settings["alternative"], (entity["entity_byname"][2],) ,"unit"], method)
+                    found = True
+                    break
+        #if method not found, try for other levels as well
+        if not found:
+            for entity in effLevel__effSelector__unit:
+                if unit["entity_byname"][0] == entity["entity_byname"][2]:
                     if entity["entity_byname"][1] == "directOff":
                         method = "no_startup"
                     elif entity["entity_byname"][1] == "directOnLP":
@@ -722,6 +760,8 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
                     if value.indexes[i] == "opFirstCross":
                         cannot_convert.append("Efficiency parameter opFirstCross cannot be converted in " + param["entity_byname"] +"\n")
                 #when single eff value back bone has two eff points and one op
+                conversion_method = None
+                outval = None
                 if method == "no_startup" or len(ops) == 1:
                     outval = max([float(eff) for eff in effs])
                     conversion_method = "constant_efficiency"
@@ -734,9 +774,12 @@ def create_unit_parameters(source_db, target_db, t_val__timestamp):
                         conversion_method = "piecewise_linear"
 
                 #out
-                alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
-                target_db = add_item_to_db(target_db, 'efficiency', alt_ent_class_target, outval)
-                target_db = add_item_to_db(target_db, 'conversion_method', alt_ent_class_target, conversion_method)
+                if conversion_method is not None and outval is not None:
+                    alt_ent_class_target = [param["alternative_name"], param["entity_byname"], "unit"]
+                    target_db = add_item_to_db(target_db, 'efficiency', alt_ent_class_target, outval)
+                    target_db = add_item_to_db(target_db, 'conversion_method', alt_ent_class_target, conversion_method)
+                else:
+                    print("WARNING: Could not determine conversion method for efficiency parameter in " + param["entity_byname"])
         shutdown_cost = None
         for param in shutdowncosts:
             if unit["entity_byname"] == param["entity_byname"]:
@@ -1012,7 +1055,7 @@ def create_reserves(source_db, target_db, t_val__timestamp):
     restypes = source_db.get_entity_items(entity_class_name='restype')
     group__restypes = source_db.get_entity_items(entity_class_name='group__restype')
     group__restype__uds = source_db.get_entity_items(entity_class_name='group__restype__up_down')
-    group__nodes = source_db.get_entity_items(entity_class_name='group__node')
+    grid__node__groups = source_db.get_entity_items(entity_class_name='grid__node__group')
     gnurs = source_db.get_entity_items(entity_class_name='grid__node__unit__restype')
     gnnrs_orig = source_db.get_entity_items(entity_class_name='grid__node__node__restype')
     reserve_activation_durations = source_db.get_parameter_value_items(entity_class_name='group__restype', parameter_definition_name = 'reserve_activation_duration') 
@@ -1086,30 +1129,31 @@ def create_reserves(source_db, target_db, t_val__timestamp):
                         target_db = add_item_to_db(target_db, "contingency_causing", alt_ent_class_target, True)
     
         for pottr in portion_of_transfer_to_reserve:
-            gnn1 = False
-            gnn2 = False
+            # Check if the node is part of the group associated with the reserve type,
+            nodes_in_group = []
             for gr in group__restypes:
-                if gr["entity_byname"][1] == restype["entity_byname"][0]:
-                    for gn in group__nodes:
-                        if gr["entity_byname"][0] == gn["entity_byname"][0]:
-                            if pottr["entity_byname"][1] == gn["entity_byname"][1]:
-                                gnn1 = True
-                            if pottr["entity_byname"][2] == gn["entity_byname"][1]:
-                                gnn2 = True
-            if gnn1 ^ gnn2:
+                if not gr["entity_byname"][1] == restype["entity_byname"][0]:
+                    continue
+                gnn1 = False
+                gnn2 = False
+                for gng in grid__node__groups:
+                    if gr["entity_byname"][0] == gng["entity_byname"][2]:
+                        if pottr["entity_byname"][1] == gng["entity_byname"][1]:
+                            gnn1 = True
+                        if pottr["entity_byname"][2] == gng["entity_byname"][1]:
+                            gnn2 = True
+                if gnn1 ^ gnn2:
+                    nodes_in_group.append(pottr["entity_byname"][1] if gnn1 else pottr["entity_byname"][2])
+                
+            for node_in_group in nodes_in_group:
                 value = api.from_database(pottr["value"], pottr["type"])
-                link_name = 'link_'+param["entity_byname"][1]+"_"+param["entity_byname"][2]
-                alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][1], restype["entity_byname"][0]), "link__node__reserve"]
+                link_name = 'link_'+pottr["entity_byname"][1]+"_"+pottr["entity_byname"][2]
+                alt_ent_class_target = [pottr["alternative_name"], (link_name, node_in_group, restype["entity_byname"][0]), "link__node__reserve"]
                 target_db = add_item_to_db(target_db, "reserve_requirement_factor", alt_ent_class_target, value)
-                alt_ent_class_target = [param["alternative_name"], (link_name, param["entity_byname"][2], restype["entity_byname"][0]), "link__node__reserve"]
-                target_db = add_item_to_db(target_db, "reserve_requirement_factor", alt_ent_class_target, value) 
-                for param in LossOfTrans:
-                    if param["entity_byname"][1] == restype["entity_byname"][0]:
-                        alt_ent_class_target = [pottr["alternative_name"], (link_name, param["entity_byname"][1], param["entity_byname"][3]), "link__node__reserve"]
-                        target_db = add_item_to_db(target_db, "contingency_causing", alt_ent_class_target, True)
-                        alt_ent_class_target = [pottr["alternative_name"], (link_name, param["entity_byname"][2], param["entity_byname"][3]), "link__node__reserve"]
-                        target_db = add_item_to_db(target_db, "contingency_causing", alt_ent_class_target, True)
-                        conting = True
+                if any(param["entity_byname"][1] == restype["entity_byname"][0] for param in LossOfTrans):
+                    alt_ent_class_target = [pottr["alternative_name"], (link_name, node_in_group, restype["entity_byname"][0]), "link__node__reserve"]
+                    target_db = add_item_to_db(target_db, "contingency_causing", alt_ent_class_target, True)
+                    conting = True
         
         if conting:
             reserve_type = "contingency"
@@ -1196,6 +1240,7 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
     constants = source_db.get_parameter_value_items(entity_class_name='unit__constraint', parameter_definition_name = 'constant')
     unit_constraints = source_db.get_entity_items(entity_class_name='unit__constraint')
     coefficients = source_db.get_parameter_value_items(entity_class_name='unit__constraint__node', parameter_definition_name = 'coefficient')
+    effLevel__effSelector__unit = source_db.get_entity_items(entity_class_name='effLevel__effSelector__unit')
     units = list()
     constraints_out = list()
     for unit_constraint in unit_constraints:
@@ -1210,7 +1255,28 @@ def create_unit_node_constraints(source_db, target_db, t_val__timestamp):
         for constant in constants:
             if constant["entity_byname"] == uc:
                 constant_value = api.from_database(constant["value"], constant["type"])
-        target_db = add_item_to_db(target_db, "constant", [settings['alternative'],(f"{uc[0]}_{uc[1]}",),'constraint'], constant_value) 
+
+        #if an online unit, the constant has really the online term with it in this case we create it with the online_coefficient and the constant itself is 0
+        if not any(unit["entity_byname"][2] == uc[0] for unit in effLevel__effSelector__unit if unit["entity_byname"][1] == "directOff"):
+            #get map if it already exists
+            existing_map = target_db.get_parameter_value_items(entity_class_name= 'unit', parameter_definition_name ='constraint_online_coefficient', entity_byname=(f"{uc[0]}",))
+            if existing_map:
+                # add the new values to the existing map
+                map_from_db = api.from_database(existing_map[0]["value"], existing_map[0]["type"])
+                map_to_db = api.Map(list(map_from_db.indexes)+ [f"{uc[0]}_{uc[1]}"], list(map_from_db.values)+ [-constant_value])
+                target_db.add_update_parameter_value_item(entity_class_name = "unit", entity_byname = (uc[0],), 
+                                                                      parameter_definition_name = "constraint_online_coefficient",
+                                                                      alternative_name = settings['alternative'],
+                                                                      type= api.Map,
+                                                                      value= map_to_db)
+            else:
+                target_db = add_item_to_db(target_db, "constraint_online_coefficient",
+                                            [settings['alternative'], (uc[0],), 'unit'], api.Map([f"{uc[0]}_{uc[1]}"], [-constant_value]))
+
+            constant_value = 0
+            target_db = add_item_to_db(target_db, "constant", [settings['alternative'], (f"{uc[0]}_{uc[1]}",), 'constraint'], constant_value)
+        else:
+            target_db = add_item_to_db(target_db, "constant", [settings['alternative'],(f"{uc[0]}_{uc[1]}",),'constraint'], constant_value) 
 
         if uc[1][0:2] == "eq":
             sense = "equal"
@@ -1339,6 +1405,8 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
         lower_list = list() 
         # Add upper_limit timeseries                 
         for gnb in gnbs:
+            if capacity == 0:
+                continue
             multi = 1
             for multiplier in multipliers:
                 if gnb["entity_byname"] == multiplier["entity_byname"]:
@@ -1361,6 +1429,8 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
         
         # add the downward limit next
         for gnb in gnbs:
+            if capacity == 0:
+                continue
             multi = 1
             for multiplier in multipliers:
                 if gnb["entity_byname"] == multiplier["entity_byname"]:
@@ -1406,6 +1476,8 @@ def create_node_capacities(source_db, target_db, t_val__timestamp):
                 target_db = add_item_to_db(target_db, 'storage_limit_method',  node_alt_ent_class_target, "lower_limit")
 
         for uLCR in uLCRs:
+            if capacity == 0:
+                continue
             size_found = False
             capacity_found = False
             ratio = api.from_database(uLCR["value"],uLCR["type"])
