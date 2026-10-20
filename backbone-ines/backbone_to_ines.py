@@ -21,7 +21,7 @@ def main():
             # add ines structure
             # empty database except for ines structure
             target_db = ines_initialize.purge_db_from_data(target_db)
-            source_db = ines_initialize.fetch_data(source_db)
+            source_db = ParameterTrackingDB(ines_initialize.fetch_data(source_db))
             target_db = ines_initialize.copy_alternatives_scenarios(source_db, target_db)
 
             #Add entities that are always there
@@ -99,6 +99,7 @@ def main():
 
             if len(cannot_convert) > 0:
                 print(cannot_convert)
+            write_untransformed_report(source_db, report_path)
             print("transformation complete")
 
             return target_db
@@ -439,6 +440,7 @@ def create_unit_relationship(source_db, target_db, t_val__timestamp):
     startFuelConsHot = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='startFuelConsHot') 
     startFuelConsWarm = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='startFuelConsWarm') 
     shutdownCosts = source_db.get_parameter_value_items(entity_class_name='grid__node__unit__io', parameter_definition_name='shutdownCosts')
+    source_db.used.update(('grid__node__unit__io', name) for name in params)
 
     for source_entity in gnuios:
         print(source_entity["name"])
@@ -1680,6 +1682,55 @@ def create_group_constraints(source_db, target_db):
                         value = api.Map(['constraint_cap_'+ param["entity_byname"][0]],[constant_value])
                         target_db = add_item_to_db(target_db, "constraint_cap_coefficient", [param['alternative_name'],(unit__group["entity_byname"][0],),'unit'], value) 
 
+    grid__node__groups = source_db.get_entity_items(entity_class_name='grid__node__group')
+    grid__node__unit__groups = source_db.get_entity_items(entity_class_name='grid__node__unit__group')
+    for param in source_db.get_parameter_value_items(entity_class_name='group', parameter_definition_name = 'instantaneousShareMax'):
+        group = param["entity_byname"][0]
+        alt = param['alternative_name']
+        value = api.from_database(param["value"], param["type"])
+        if not isinstance(value, (int, float)):
+            cannot_convert.append(f"instantaneousShareMax of group {group}: only constant values are supported")
+            continue
+        constraint_name = 'instantaneousShareMax_' + group
+        ines_transform.assert_success(target_db.add_entity_item(entity_class_name='constraint', entity_byname=(constraint_name,)), warn=True)
+        target_db = add_item_to_db(target_db, "constant", [alt, (constraint_name,), 'constraint'], 0.0)
+        target_db = add_item_to_db(target_db, "sense", [alt, (constraint_name,), 'constraint'], "less_than")
+
+        for gng in grid__node__groups:
+            if gng["entity_byname"][2] == group:
+                target_db = add_to_coefficient_map(target_db, 'constraint_demand_coefficient',
+                                                   [alt, (gng["entity_byname"][1],), 'node'], constraint_name, -value)
+
+        for gnug in grid__node__unit__groups:
+            if gnug["entity_byname"][3] != group:
+                continue
+            flow_byname = (gnug["entity_byname"][2], gnug["entity_byname"][1])
+            if not target_db.get_entity_item(entity_class_name='unit__to_node', entity_byname=flow_byname):
+                continue
+            target_db = add_to_coefficient_map(target_db, 'constraint_flow_coefficient',
+                                               [alt, flow_byname, 'unit__to_node'], constraint_name, 1.0)
+
+    return target_db
+
+def add_to_coefficient_map(target_db, param_name, alt_ent_class_target, constraint_name, coefficient):
+    # entities can take part in several constraints, so extend the existing map instead of overwriting it
+    alt, byname, entity_class = alt_ent_class_target
+    existing = [item for item in target_db.get_parameter_value_items(entity_class_name=entity_class, parameter_definition_name=param_name, entity_byname=byname)
+                if item["alternative_name"] == alt]
+    if not existing:
+        return add_item_to_db(target_db, param_name, alt_ent_class_target, api.Map([constraint_name], [coefficient]))
+    old_map = api.from_database(existing[0]["value"], existing[0]["type"])
+    indexes = list(old_map.indexes)
+    values = list(old_map.values)
+    if constraint_name in indexes:
+        values[indexes.index(constraint_name)] = coefficient
+    else:
+        indexes.append(constraint_name)
+        values.append(coefficient)
+    value_x, type_ = api.to_database(api.Map(indexes, values))
+    ines_transform.assert_success(target_db.add_update_parameter_value_item(entity_class_name=entity_class, entity_byname=byname,
+                                                                            parameter_definition_name=param_name, alternative_name=alt,
+                                                                            value=value_x, type=type_), warn=True)
     return target_db
 
 def add_node_types(source_db, target_db):
@@ -1855,6 +1906,44 @@ def inflow_timeseries_from_csv(target_db, input_folder, t_val__timestamp):
 #HELPPER FUNCTIONS
 ###############
 
+class ParameterTrackingDB:
+    """Wraps the source DatabaseMapping and records which (class, parameter) pairs are queried."""
+    def __init__(self, db):
+        self._db = db
+        self.used = set()
+
+    def _record(self, kwargs):
+        if "entity_class_name" in kwargs and "parameter_definition_name" in kwargs:
+            self.used.add((kwargs["entity_class_name"], kwargs["parameter_definition_name"]))
+
+    def get_parameter_value_items(self, *args, **kwargs):
+        self._record(kwargs)
+        return self._db.get_parameter_value_items(*args, **kwargs)
+
+    def get_parameter_value_item(self, *args, **kwargs):
+        self._record(kwargs)
+        return self._db.get_parameter_value_item(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+def write_untransformed_report(source_db, path):
+    counts = dict()
+    for param in source_db.get_items("parameter_value"):
+        key = (param["entity_class_name"], param["parameter_definition_name"])
+        counts[key] = counts.get(key, 0) + 1
+    untransformed = sorted(key for key in counts if key not in source_db.used)
+    with open(path, 'w') as file:
+        file.write("Backbone parameters with values in the source database that were not transformed to INES\n")
+        file.write("entity_class\tparameter\tvalue_count\n")
+        for entity_class, parameter in untransformed:
+            file.write(f"{entity_class}\t{parameter}\t{counts[(entity_class, parameter)]}\n")
+        if cannot_convert:
+            file.write("\nValues that could not be converted:\n")
+            for item in cannot_convert:
+                file.write(f"{item}\n")
+    print(f"{len(untransformed)} untransformed parameters written to {path}")
+
 def make_duration(param):
     value = api.from_database(param["value"], param["type"])
     duration = api.Duration(str(value)+"h")
@@ -1875,6 +1964,13 @@ def calculate_investment_cost(source_db, target_db, alt_ent_class_source, alt_en
 def pass_timeseries(target_db, target_name, target_name_stoch, value, alt_ent_class_target, t_val__timestamp, stochastic_group = None):
     if isinstance(value,float):
         target_db = add_item_to_db(target_db, target_name, alt_ent_class_target, value)
+    elif not isinstance(value.values[0], api.Map):
+        # no stochastic index: (timestep, value) only
+        timestamps = [str(stamp) for stamp in t_val__timestamp.values()]
+        t_vals = list(value.indexes)
+        out_vals = [value.values[t_vals.index(t_val)] if t_val in t_vals else 0.0 for t_val in t_val__timestamp.keys()]
+        time_series = api.TimeSeriesVariableResolution(timestamps, out_vals, ignore_year = False, repeat=False, index_name="time step")
+        target_db = add_item_to_db(target_db, target_name, alt_ent_class_target, time_series)
     else:
         if len(value.values) > 1:
             if target_name_stoch:
@@ -2047,6 +2143,7 @@ if __name__ == "__main__":
         url_db_in = sys.argv[1]
         url_db_out = sys.argv[2]
         settings_path = './backbone_to_ines_settings.yaml'
+        report_path = sys.argv[3] if len(sys.argv) > 3 else './untransformed_parameters.txt'
 
         # open yaml files
         entities_to_copy,parameter_transforms,parameter_methods, parameters_to_relationships, parameters_to_parameters = conversion_configuration()
